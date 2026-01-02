@@ -9,11 +9,11 @@ st.set_page_config(
 )
 
 # --- ESTADO GLOBAL (Sessão) ---
-# Aqui garantimos que a Chave API e o Contexto passam para as outras apps
+# Garante que a chave API e o contexto persistem entre páginas
 if "api_key" not in st.session_state:
     st.session_state["api_key"] = ""
 if "contexto_utilizador" not in st.session_state:
-    st.session_state["contexto_utilizador"] = "Geral"
+    st.session_state["contexto_utilizador"] = "Analista Geral"
 
 # --- SIDEBAR GLOBAL ---
 with st.sidebar:
@@ -21,50 +21,48 @@ with st.sidebar:
     st.title("Central Ambiental")
     st.divider()
     
-    # 1. Definição do Contexto (O seu pedido principal)
+    # 1. Definição do Contexto
     st.header("👤 Perfil do Utilizador")
     contexto = st.selectbox(
         "Modo de Operação:",
         ["Analista Geral", "Fiscalização (IGAMAOT)", "Promotor/Consultor", "Decisor (CCDR)"]
     )
     st.session_state["contexto_utilizador"] = contexto
-    
-    st.info(f"Modo Ativo: **{contexto}**")
+    st.caption(f"Contexto Ativo: **{contexto}**")
     
     st.divider()
 
-    # 2. Chave API Única (Para não pedir em cada app)
+    # 2. Chave API Única
     st.header("🔑 Credenciais IA")
     api_input = st.text_input("Google Gemini API Key", type="password", value=st.session_state["api_key"])
     
     if api_input:
         st.session_state["api_key"] = api_input
-        genai.configure(api_key=api_input)
-        st.success("Chave API Configurada Globalmente!")
+        try:
+            genai.configure(api_key=api_input)
+            st.success("API Conectada!")
+        except Exception as e:
+            st.error(f"Erro na Chave: {e}")
     else:
-        st.warning("Insira a chave para desbloquear os módulos de IA.")
+        st.warning("Insira a chave para usar os módulos de IA.")
 
-# --- CONTEÚDO DA PÁGINA PRINCIPAL ---
+# --- CONTEÚDO DA HOMEPAGE ---
 st.title("🌍 Super App de Inteligência Ambiental")
+
 st.markdown(f"""
-Bem-vindo à plataforma integrada. Está a operar com o perfil de **{contexto}**.
+### Bem-vindo à Central de Comando.
+Está a operar com o perfil de: **{contexto}**.
 
-### 🚀 Módulos Disponíveis (Menu Lateral):
+Utilize o **Menu Lateral Esquerdo** para navegar entre os módulos especializados:
 
-| Módulo | Função Principal | IA Ativa? |
+| Módulo | Descrição | Tecnologia |
 | :--- | :--- | :---: |
-| **01. Caso a Caso** | Validação RJAIA e Minutas de Decisão | ✅ |
-| **02. Gestão Prazos** | Calculadora de Prazos Legais e Gantt | ❌ |
-| **03. Compliance** | Análise 'PATE' e Pesquisa Web | ✅ |
-| **04. Auditor Pro** | Análise de Grandes EIA (File API) | ✅ |
-| **05. Simplex** | Verificação rápida DL 11/2023 | ✅ |
+| **01. Caso a Caso** | Validação RJAIA e Minutas de Decisão (Anexo II) | 🤖 IA |
+| **02. Prazos AIA** | Calculadora de Prazos Legais e Gráficos de Gantt | 📅 Algoritmo |
+| **03. Compliance** | Análise 'PATE' e Pesquisa Web de Legislação | 🤖 IA + 🌐 Web |
+| **04. Auditor EIA** | Análise profunda de EIAs grandes (File API) | 🤖 IA Pro |
+| **05. Simplex AIncA** | Verificação rápida DL 11/2023 | 🤖 IA Flash |
 
 ---
-🔽 **Selecione um módulo na barra lateral esquerda para começar.**
+ℹ️ *Todas as ferramentas partilham a mesma Chave API definida aqui.*
 """)
-
-# Lógica de Contexto (Exemplo de como afeta a "Homepage")
-if contexto == "Fiscalização (IGAMAOT)":
-    st.error("⚠️ ALERTA: Foco em detetar desconformidades e incumprimento de prazos.")
-elif contexto == "Promotor/Consultor":
-    st.success("💡 DICA: Utilize o módulo 'Simplex' para pré-validar o seu projeto antes da submissão.")
