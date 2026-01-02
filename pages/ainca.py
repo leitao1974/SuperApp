@@ -5,6 +5,13 @@ from docx import Document
 from io import BytesIO
 import time
 
+import sys, os
+sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
+import utils
+
+# ... (depois do st.set_page_config) ...
+
+utils.sidebar_comum()
 # --- CONFIGURAÇÃO ---
 st.set_page_config(page_title="Simplex AIncA AI Pro", page_icon="⚖️", layout="wide")
 st.title("⚖️ Analista AIncA (Com Gestão de Quota)")
@@ -140,3 +147,4 @@ if st.session_state['analise']:
     
     doc = create_word_docx(st.session_state['analise'], st.session_state['n_p'], st.session_state['n_l'])
     st.download_button("📥 Download Word", doc, "Relatorio_Simplex.docx", "application/vnd.openxmlformats-officedocument.wordprocessingml.document")
+
