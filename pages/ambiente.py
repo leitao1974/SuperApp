@@ -7,7 +7,13 @@ from duckduckgo_search import DDGS
 import requests
 from bs4 import BeautifulSoup
 import time
+import sys, os
+sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
+import utils
 
+# ... (depois do st.set_page_config) ...
+
+utils.sidebar_comum()
 # Tenta importar a biblioteca legislativa local
 try:
     import legislacao
@@ -233,4 +239,5 @@ if uploaded_target and api_key:
             with t2:
                 st.download_button("Descarregar Word (.docx)", create_docx(result), "Relatorio_Ambiental.docx")
                 st.download_button("Descarregar Markdown (.md)", result, "Relatorio_Ambiental.md")
+
 
