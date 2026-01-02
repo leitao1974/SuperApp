@@ -1,15 +1,15 @@
+# main.py
 import streamlit as st
 import google.generativeai as genai
 
 # Configuração da Página Principal
 st.set_page_config(
-    page_title="Super App Ambiental",
-    page_icon="🌍",
+    page_title="Avaliação Ambiental",  # <--- NOME ALTERADO
+    page_icon="🌿",
     layout="wide"
 )
 
 # --- ESTADO GLOBAL (Sessão) ---
-# Garante que a chave API e o contexto persistem entre páginas
 if "api_key" not in st.session_state:
     st.session_state["api_key"] = ""
 if "contexto_utilizador" not in st.session_state:
@@ -17,15 +17,19 @@ if "contexto_utilizador" not in st.session_state:
 
 # --- SIDEBAR GLOBAL ---
 with st.sidebar:
-    st.image("https://cdn-icons-png.flaticon.com/512/2037/2037649.png", width=80)
-    st.title("Central Ambiental")
+    st.title("Avaliação Ambiental") # <--- TÍTULO ALTERADO
     st.divider()
     
-    # 1. Definição do Contexto
+    # 1. Definição do Contexto (PERFIS ATUALIZADOS)
     st.header("👤 Perfil do Utilizador")
     contexto = st.selectbox(
         "Modo de Operação:",
-        ["Analista Geral", "Fiscalização (IGAMAOT)", "Promotor/Consultor", "Decisor (CCDR)"]
+        [
+            "Analista Geral", 
+            "Revisor Técnico",       # <--- SUBSTITUIU "Fiscalização"
+            "Promotor/Consultor", 
+            "Autoridade de AIA"      # <--- SUBSTITUIU "Decisor (CCDR)"
+        ]
     )
     st.session_state["contexto_utilizador"] = contexto
     st.caption(f"Contexto Ativo: **{contexto}**")
@@ -47,22 +51,23 @@ with st.sidebar:
         st.warning("Insira a chave para usar os módulos de IA.")
 
 # --- CONTEÚDO DA HOMEPAGE ---
-st.title("🌍 Super App de Inteligência Ambiental")
+st.title("🌿 Plataforma de Avaliação Ambiental")
 
 st.markdown(f"""
-### Bem-vindo à Central de Comando.
+### Bem-vindo.
 Está a operar com o perfil de: **{contexto}**.
 
-Utilize o **Menu Lateral Esquerdo** para navegar entre os módulos especializados:
+Utilize o **Menu Lateral Esquerdo** para aceder às ferramentas de análise:
 
-| Módulo | Descrição | Tecnologia |
-| :--- | :--- | :---: |
-| **01. Caso a Caso** | Validação RJAIA e Minutas de Decisão (Anexo II) | 🤖 IA |
-| **02. Prazos AIA** | Calculadora de Prazos Legais e Gráficos de Gantt | 📅 Algoritmo |
-| **03. Compliance** | Análise 'PATE' e Pesquisa Web de Legislação | 🤖 IA + 🌐 Web |
-| **04. Auditor EIA** | Análise profunda de EIAs grandes (File API) | 🤖 IA Pro |
-| **05. Simplex AIncA** | Verificação rápida DL 11/2023 | 🤖 IA Flash |
+| Módulo | Função |
+| :--- | :--- |
+| **01. Caso a Caso** | Validação de critérios de sujeição a AIA (Anexo II) |
+| **02. Prazos AIA** | Calculadora de Prazos Legais e Cronogramas |
+| **03. Compliance** | Auditoria de conformidade legal e normativa |
+| **04. Auditor EIA** | Análise técnica de Estudos de Impacte Ambiental |
+| **05. Simplex AIncA** | Verificação de dispensas (DL 11/2023) |
 
 ---
-ℹ️ *Todas as ferramentas partilham a mesma Chave API definida aqui.*
+ℹ️ *Plataforma de apoio à decisão técnica em Avaliação de Impacte Ambiental.*
 """)
+
