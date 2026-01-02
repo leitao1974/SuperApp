@@ -1,0 +1,11 @@
+streamlit
+google-generativeai
+pandas
+plotly
+matplotlib
+pypdf
+python-docx
+duckduckgo-search
+requests
+beautifulsoup4
+fpdf
