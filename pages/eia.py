@@ -11,7 +11,13 @@ import time
 import tempfile
 import re
 from datetime import datetime
+import sys, os
+sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
+import utils
 
+# ... (depois do st.set_page_config) ...
+
+utils.sidebar_comum()
 # ==========================================
 # --- 1. CONFIGURAÇÃO VISUAL ---
 # ==========================================
@@ -376,3 +382,4 @@ if st.button("🚀 INICIAR AUDITORIA", type="primary"):
                     mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
                     on_click=reset_app
                 )
+
