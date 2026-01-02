@@ -2,70 +2,54 @@ import streamlit as st
 import google.generativeai as genai
 
 def sidebar_comum():
-    """
-    Gera a barra lateral padrão para todas as páginas da Super App.
-    Garante que a API Key e o Contexto não se perdem ao mudar de página.
-    """
     with st.sidebar:
-        # Título pequeno para indicar que é uma sub-página
-        st.caption("Navegação Global")
         st.divider()
+        st.caption("🔧 DEFINIÇÕES GLOBAIS")
         
-        # 1. RECUPERAR/DEFINIR O CONTEXTO
-        # Se não existir na memória, define o padrão
+        # 1. GESTÃO DE CONTEXTO (PERFIL)
         if "contexto_utilizador" not in st.session_state:
             st.session_state["contexto_utilizador"] = "Analista Geral"
         
-        # Lista de perfis (Tem de ser IGUAL à do main.py)
-        opcoes_perfis = [
-            "Analista Geral", 
-            "Revisor Técnico", 
-            "Promotor/Consultor", 
-            "Autoridade de AIA"
-        ]
+        opcoes = ["Analista Geral", "Revisor Técnico", "Promotor/Consultor", "Autoridade de AIA"]
+        # Evita erro se o valor atual não estiver na lista
+        idx = 0
+        if st.session_state["contexto_utilizador"] in opcoes:
+            idx = opcoes.index(st.session_state["contexto_utilizador"])
+
+        # O key="contexto_utilizador" liga este campo diretamente à memória
+        st.selectbox("Perfil:", opcoes, index=idx, key="contexto_utilizador_widget", 
+                     on_change=lambda: st.session_state.update({"contexto_utilizador": st.session_state.contexto_utilizador_widget}))
         
-        # Tenta encontrar o índice do perfil atual na lista
-        try:
-            indice_atual = opcoes_perfis.index(st.session_state["contexto_utilizador"])
-        except ValueError:
-            indice_atual = 0
-            
-        novo_contexto = st.selectbox(
-            "Modo de Operação:",
-            opcoes_perfis,
-            index=indice_atual
-        )
-        
-        # Atualiza a memória se o utilizador mudar aqui
-        st.session_state["contexto_utilizador"] = novo_contexto
-        st.caption(f"Perfil Ativo: **{novo_contexto}**")
+        # Sincronização manual para garantir consistência
+        if "contexto_utilizador_widget" in st.session_state:
+             st.session_state["contexto_utilizador"] = st.session_state.contexto_utilizador_widget
 
         st.divider()
 
-        # 2. GESTÃO DA API KEY
+        # 2. API KEY (A CORREÇÃO ESTÁ AQUI)
         st.header("🔑 Credenciais IA")
         
+        # Se a chave ainda não existe, cria vazia
         if "api_key" not in st.session_state:
             st.session_state["api_key"] = ""
-            
-        # O value vem da session_state, para já vir preenchido se foi posto no main.py
-        api_input = st.text_input(
-            "Google Gemini API Key", 
+
+        # O SEGREDO: Usar key="api_key" obriga o Streamlit a nunca esquecer o valor
+        st.text_input(
+            "Gemini API Key", 
             type="password", 
-            value=st.session_state["api_key"]
+            key="api_key",
+            help="A chave ficará guardada enquanto a aba estiver aberta."
         )
         
-        if api_input:
-            st.session_state["api_key"] = api_input
+        # Configura a IA imediatamente se a chave existir
+        if st.session_state.get("api_key"):
             try:
-                genai.configure(api_key=api_input)
-                # Não mostramos mensagem de sucesso aqui para não poluir a sidebar
-            except:
-                pass
+                genai.configure(api_key=st.session_state["api_key"])
+            except Exception:
+                pass # Ignora erros silenciosos na sidebar
         else:
-            st.warning("⚠️ IA inativa (Falta Key)")
-            
+            st.warning("⚠️ Insira a Chave para usar a IA")
+        
         st.divider()
-        st.markdown("---")
         if st.button("🏠 Voltar ao Início"):
             st.switch_page("main.py")
