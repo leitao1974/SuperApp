@@ -1,262 +1,462 @@
 import sys
 import os
 
-# --- INJEÇÃO DE CAMINHO (Obrigatório para Multipage Apps) ---
-# 1. Obtém o caminho da pasta atual (onde está este script)
+# --- CORREÇÃO DE CAMINHOS (CRÍTICO) ---
+# Adiciona a pasta "pai" (SuperApp) ao caminho para encontrar o utils.py
 current_dir = os.path.dirname(os.path.abspath(__file__))
-# 2. Obtém o caminho da pasta "pai" (a raiz do projeto SuperApp)
 root_dir = os.path.dirname(current_dir)
-# 3. Adiciona a raiz ao topo da lista de procura do Python
 sys.path.insert(0, root_dir)
 
-# --- IMPORTS AGORA VÃO FUNCIONAR ---
+import streamlit as st
+
+# --- 1. CONFIGURAÇÃO DA PÁGINA (Obrigatório ser a primeira instrução Streamlit) ---
+st.set_page_config(page_title="Análise Caso a Caso RJAIA", page_icon="⚖️", layout="wide")
+
+# --- IMPORTS APÓS CONFIGURAÇÃO ---
 try:
     import utils
-    import legislacao
 except ImportError as e:
-    # Se falhar, vamos imprimir onde o Python está a procurar para ajudar no debug
-    import streamlit as st
-    st.error(f"Erro Crítico: Não encontro o ficheiro 'utils.py' ou 'legislacao.py'.")
-    st.write(f"Estou à procura em: {root_dir}")
-    st.write(f"Erro detalhado: {e}")
+    st.error(f"Erro Crítico: Não foi possível importar 'utils.py'. Verifique se está na pasta raiz. Detalhe: {e}")
     st.stop()
 
-import streamlit as st
-# ... Daqui para baixo continua o seu código normal ...
-import streamlit as st
-import google.generativeai as genai
 from pypdf import PdfReader
 from docx import Document
-from io import BytesIO
-from duckduckgo_search import DDGS
-import requests
-from bs4 import BeautifulSoup
+from docx.shared import Pt, RGBColor
+from docx.enum.text import WD_ALIGN_PARAGRAPH
+from docx.oxml.ns import qn
+from docx.oxml import OxmlElement
+import google.generativeai as genai
+import io
 import time
+from datetime import datetime
+import re
 
-# Tenta importar a biblioteca legislativa local
+# --- CARREGAR MENU LATERAL COMUM ---
 try:
-    import legislacao
-except ImportError:
-    st.error("⚠️ Ficheiro 'legislacao.py' não encontrado. Cria-o na mesma pasta do app.py.")
-    st.stop()
+    utils.sidebar_comum()
+except Exception as e:
+    st.warning(f"Aviso: Menu lateral não carregou corretamente. {e}")
 
-# --- CONFIGURAÇÃO DA PÁGINA ---
-st.set_page_config(
-    page_title="Análise Ambiental IA (Pro)",
-    page_icon="🌿",
-    layout="wide"
-)
+# --- RECUPERAR API KEY (Do Utils) ---
+api_key = st.session_state.get("api_key", "")
 
-# --- GESTÃO DE ESTADO ---
-if 'uploader_key' not in st.session_state:
-    st.session_state.uploader_key = 0
+# ==========================================
+# --- 1. BASE DE DADOS JURÍDICA ---
+# ==========================================
+LEGISLATION_DB = {
+    "RJAIA (DL 151-B/2013)": "https://diariodarepublica.pt/dr/legislacao-consolidada/decreto-lei/2013-116043164",
+    "Alteração RJAIA (DL 152-B/2017)": "https://diariodarepublica.pt/dr/detalhe/decreto-lei/152-b-2017-114337069",
+    "RGGR (DL 102-D/2020)": "https://diariodarepublica.pt/dr/legislacao-consolidada/decreto-lei/2020-150917243",
+    "LUA (DL 75/2015)": "https://diariodarepublica.pt/dr/legislacao-consolidada/decreto-lei/2015-106562356",
+    "Rede Natura 2000 (DL 140/99)": "https://diariodarepublica.pt/dr/legislacao-consolidada/decreto-lei/1999-34460975",
+    "Regulamento Geral do Ruído (DL 9/2007)": "https://diariodarepublica.pt/dr/legislacao-consolidada/decreto-lei/2007-34526556",
+    "Lei da Água (Lei 58/2005)": "https://diariodarepublica.pt/dr/legislacao-consolidada/lei/2005-34563267",
+    "Emissões Industriais (DL 127/2013)": "https://diariodarepublica.pt/dr/legislacao-consolidada/decreto-lei/2013-34789569"
+}
 
-def limpar_dados():
+# ==========================================
+# --- ESTADO E RESET ---
+# ==========================================
+if 'uploader_key' not in st.session_state: st.session_state.uploader_key = 0
+if 'validation_result' not in st.session_state: st.session_state.validation_result = None
+if 'decision_result' not in st.session_state: st.session_state.decision_result = None
+
+def reset_app():
     st.session_state.uploader_key += 1
+    st.session_state.validation_result = None
+    st.session_state.decision_result = None
     st.rerun()
 
-# --- ESTILO CSS ---
-st.markdown("""
-<style>
-    .stButton>button { width: 100%; border-radius: 8px; height: 3em; font-weight: bold; }
-    h1 { color: #155724; }
-    .stExpander { border: 1px solid #c3e6cb; border-radius: 5px; background-color: #f8f9fa; }
-    .stToast { background-color: #d4edda; color: #155724; }
-</style>
-""", unsafe_allow_html=True)
+# ==========================================
+# --- FUNÇÕES AUXILIARES (WORD) ---
+# ==========================================
 
-# --- CABEÇALHO ---
-col1, col2 = st.columns([1, 6])
-with col1: st.markdown("# 🌿")
-with col2:
-    st.title("Análise Ambiental & Compliance")
-    st.caption("Protocolo PATE v5.0 | Full Context Window | Enterprise Ready")
+def add_hyperlink(paragraph, text, url):
+    """Adiciona um hiperlink clicável num parágrafo do Word."""
+    part = paragraph.part
+    r_id = part.relate_to(url, "http://schemas.openxmlformats.org/officeDocument/2006/relationships/hyperlink", is_external=True)
+    hyperlink = OxmlElement("w:hyperlink")
+    hyperlink.set(qn("r:id"), r_id)
+    new_run = OxmlElement("w:r")
+    rPr = OxmlElement("w:rPr")
+    c = OxmlElement("w:color")
+    c.set(qn("w:val"), "0000FF")
+    rPr.append(c)
+    u = OxmlElement("w:u")
+    u.set(qn("w:val"), "single")
+    rPr.append(u)
+    new_run.append(rPr)
+    new_run.text = text
+    hyperlink.append(new_run)
+    paragraph._p.append(hyperlink)
+    return hyperlink
 
-# --- FUNÇÃO AUXILIAR: LISTAR MODELOS ---
-def get_available_models(api_key):
-    try:
-        genai.configure(api_key=api_key)
-        models = [m.name for m in genai.list_models() if 'generateContent' in m.supported_generation_methods]
-        return models
-    except:
-        return []
+def markdown_to_word(doc, text):
+    if not text: return
+    lines = text.split('\n')
+    for line in lines:
+        line = line.strip()
+        if not line: continue
+        p = None
+        if line.startswith('## '):
+            p = doc.add_heading(line.replace('##', '').strip(), level=2)
+        elif line.startswith('### '):
+            p = doc.add_heading(line.replace('###', '').strip(), level=3)
+        elif line.startswith('- ') or line.startswith('* '):
+            p = doc.add_paragraph(style='List Bullet')
+            clean_line = line[2:]
+            process_bold(p, clean_line)
+            p.paragraph_format.space_after = Pt(6) 
+        else:
+            p = doc.add_paragraph()
+            process_bold(p, line)
+            p.paragraph_format.space_after = Pt(10)
+        if p and not line.startswith('#'):
+            p.alignment = WD_ALIGN_PARAGRAPH.JUSTIFY
 
-# --- SIDEBAR ---
-with st.sidebar:
-    st.header("⚙️ 1. Motor de IA")
-    api_key = st.text_input("Google Gemini API Key", type="password")
-    
-    # Seletor de Modelo Inteligente
-    selected_model = "models/gemini-1.5-flash"
-    if api_key:
-        avail = get_available_models(api_key)
-        if avail:
-            # Tenta selecionar o 1.5 Flash por defeito (melhor custo-benefício)
-            idx = 0
-            for i, m in enumerate(avail):
-                if "1.5-flash" in m: 
-                    idx = i
-                    break
-            selected_model = st.selectbox("Modelo:", avail, index=idx)
-    
-    st.divider()
-    
-    st.header("📚 2. Base Legislativa")
-    library = legislacao.get_library()
-    library_context = ""
-    active_count = 0
-    
-    # Seletores de Legislação
-    for category, laws in library.items():
-        with st.expander(f"📂 {category}", expanded=False):
-            for law_name, details in laws.items():
-                if st.checkbox(law_name, value=False, key=law_name):
-                    active_count += 1
-                    library_context += f"- [ATIVA] {law_name} ({details['nivel']})\n  MANDATO: {details['mandato']}\n\n"
-    
-    if active_count > 0: st.success(f"✅ {active_count} regimes ativados.")
+def process_bold(paragraph, text):
+    parts = re.split(r'(\*\*.*?\*\*)', text)
+    for part in parts:
+        if part.startswith('**') and part.endswith('**'):
+            run = paragraph.add_run(part[2:-2])
+            run.bold = True
+        else:
+            paragraph.add_run(part)
 
-    st.divider()
-    st.header("🌐 3. Fontes Extra")
-    uploaded_legal_docs = st.file_uploader("PDFs Adicionais", type="pdf", accept_multiple_files=True, key=f"legal_{st.session_state.uploader_key}")
-    search_query = st.text_input("Pesquisa Web")
-    use_web_search = st.checkbox("Incluir Web", value=True)
-    
-    st.divider()
-    if st.button("🗑️ Limpar Sessão"): limpar_dados()
+def append_legislation_section(doc):
+    doc.add_page_break()
+    doc.add_heading("Legislação Consultada e Referências", level=1)
+    p_intro = doc.add_paragraph("A presente análise teve por base os seguintes diplomas legais:")
+    p_intro.alignment = WD_ALIGN_PARAGRAPH.JUSTIFY
+    for name, url in LEGISLATION_DB.items():
+        p = doc.add_paragraph(style='List Bullet')
+        add_hyperlink(p, name, url)
 
-# --- FUNÇÕES ---
+# ==========================================
+# --- EXTRAÇÃO E IA ---
+# ==========================================
 
-def get_pdf_text(pdf_file):
-    """Lê o PDF completo, sem limites de páginas."""
+def extract_text(files, label):
     text = ""
-    try:
-        reader = PdfReader(pdf_file)
-        # REMOVIDO: Limite de páginas. Agora lê tudo.
-        for page in reader.pages:
-            text += page.extract_text() or ""
-    except Exception as e:
-        st.error(f"Erro ao ler {pdf_file.name}: {e}")
+    if not files: return "" 
+    for f in files:
+        try:
+            f.seek(0)
+            bytes_data = f.read()
+            f_stream = io.BytesIO(bytes_data)
+            r = PdfReader(f_stream)
+            if r.is_encrypted:
+                try: r.decrypt("") 
+                except: pass
+            file_text = ""
+            for i, p in enumerate(r.pages):
+                extracted = p.extract_text()
+                if extracted:
+                    file_text += f"[Pág. {i+1}] {extracted}\n"
+            if len(file_text.strip()) < 50:
+                st.warning(f"⚠️ O ficheiro '{f.name}' parece ser uma imagem ou está vazio.")
+                text += f"\n[AVISO: Ficheiro {f.name} ilegível/imagem]\n"
+            else:
+                text += f"\n\n>>> FONTE: {label} ({f.name}) <<<\n{file_text}"
+        except Exception as e:
+            st.error(f"❌ Erro ao ler '{f.name}': {str(e)}")
+            text += f"\n[ERRO LEITURA: {f.name}]\n"
     return text
 
-def search_online(query):
-    if not query: return ""
-    results_text = ""
+def get_ai(prompt):
+    if not api_key: return "Erro: Falta API Key."
+    # Usa o modelo Flash que é mais rápido e eficiente para estas tarefas
+    model = genai.GenerativeModel("gemini-1.5-flash")
     try:
-        with DDGS() as ddgs:
-            results = list(ddgs.text(f"{query} legislação oficial", max_results=3))
-        for r in results:
-            try:
-                page = requests.get(r['href'], timeout=4)
-                soup = BeautifulSoup(page.content, 'html.parser')
-                # Apanha mais contexto da web
-                text = "\n".join([p.text for p in soup.find_all('p')])[:4000]
-                results_text += f"\n>>> WEB: {r['title']} <<<\n{text}\n"
-            except: continue
-        return results_text
-    except: return ""
+        genai.configure(api_key=api_key)
+        response = model.generate_content(prompt)
+        return response.text
+    except Exception as e:
+        return f"Erro IA: {str(e)}"
 
-def create_docx(text):
+# --- PROMPTS ---
+
+def analyze_validation(t_sim, t_form, t_proj, t_leg):
+    legislacao_str = ", ".join(LEGISLATION_DB.keys())
+    return get_ai(f"""
+    Atua como PERITO AUDITOR AMBIENTAL rigoroso.
+    
+    CONTEXTO LEGAL:
+    Utiliza: {legislacao_str}.
+    Contexto Local Prioritário: {t_leg[:30000]}
+
+    DADOS:
+    {t_sim[:25000]}
+    {t_form[:25000]}
+    {t_proj[:80000]}
+
+    TAREFA:
+    Audita a consistência, valida limiares RJAIA e cruza com PDM.
+
+    REGRAS DE OUTPUT (MARKDOWN OBRIGATÓRIO):
+    1. Usa cabeçalhos "##" para secções principais.
+    2. Usa cabeçalhos "###" para sub-secções.
+    3. Usa LISTAS COM MARCADORES (-) para apresentar dados.
+    4. Usa **Negrito** para destacar valores numéricos e conclusões.
+
+    ESTRUTURA DO RELATÓRIO:
+    Linha 1: "STATUS: [VALIDADO ou INCONSISTENTE]"
+    
+    ## 1. Resumo Executivo
+    (Breve síntese do projeto e conclusão principal).
+
+    ## 2. Auditoria de Consistência
+    ### 2.1. Áreas
+    - **Simulação:** [Valor]
+    - **Projeto:** [Valor]
+    - **Conclusão:** [Análise]
+
+    ### 2.2. Gestão de Resíduos e Capacidades
+    - **LER Previstos:** [Lista]
+    - **Capacidade Tratamento:** [Valor] vs [Valor]
+
+    ## 3. Enquadramento Legal e Localização
+    ### 3.1. Análise RJAIA
+    - **Limiar Aplicável:** [Citar Anexo/Ponto]
+    - **Valor do Projeto:** [Valor]
+    - **Parecer:** [Sujeito / Não Sujeito]
+
+    ### 3.2. Condicionantes Locais (PDM/REN/RAN)
+    - **Localização:** [Freguesia/Local]
+    - **Análise PDM:** (Cruzar com o documento 'Contexto Local' se existir).
+    """)
+
+def generate_decision_text(t_sim, t_form, t_proj, t_leg):
+    return get_ai(f"""
+    Atua como Técnico Superior da Autoridade de AIA. Redige a MINUTA DE DECISÃO.
+    
+    DADOS:
+    {t_proj[:120000]}
+    {t_form[:25000]}
+    Legislação Local: {t_leg[:40000]}
+
+    OUTPUT - APENAS PREENCHER AS TAGS ABAIXO (Texto formal e justificado):
+    
+    ### CAMPO_DESIGNACAO
+    (Nome exato do projeto)
+    
+    ### CAMPO_TIPOLOGIA
+    (Ex: Ponto 11.b do Anexo II do DL 151-B/2013...)
+    
+    ### CAMPO_ENQUADRAMENTO
+    (Artigo jurídico que fundamenta a decisão 'Caso a Caso')
+    
+    ### CAMPO_LOCALIZACAO
+    (Localização administrativa completa)
+    
+    ### CAMPO_AREAS_SENSIVEIS
+    (Análise art. 2.º RJAIA. Se não houver, escrever "Não abrange áreas sensíveis.")
+    
+    ### CAMPO_PROPONENTE
+    (Nome da empresa/promotor)
+    
+    ### CAMPO_ENTIDADE_LICENCIADORA
+    (Câmara Municipal ou CCDR)
+    
+    ### CAMPO_AUTORIDADE_AIA
+    (CCDR territorialmente competente)
+    
+    ### CAMPO_DESCRICAO
+    (Descrição técnica. Usa parágrafos curtos.)
+    
+    ### CAMPO_CARATERISTICAS
+    (Detalhar capacidades instaladas, LER, gestão de efluentes.)
+    
+    ### CAMPO_LOCALIZACAO_PROJETO
+    (Análise da compatibilidade com o PDM e servidões.)
+    
+    ### CAMPO_IMPACTES
+    (Análise por descritor: Ruído, Ar, Água, Resíduos.)
+    
+    ### CAMPO_DECISAO
+    (Decisão final explícita: SUJEITO / NÃO SUJEITO a AIA)
+    
+    ### CAMPO_CONDICIONANTES
+    (Lista de obrigações a cumprir pelo promotor.)
+    """)
+
+# ==========================================
+# --- GERADORES DE DOCS ---
+# ==========================================
+
+def create_validation_doc(text):
     doc = Document()
-    doc.add_heading('Relatório de Auditoria Ambiental', 0)
-    for line in text.split('\n'):
-        if line.startswith('# '): doc.add_heading(line[2:], 1)
-        elif line.startswith('## '): doc.add_heading(line[3:], 2)
-        elif line.startswith('### '): doc.add_heading(line[4:], 3)
-        else: doc.add_paragraph(line.replace('*',''))
-    b = BytesIO()
-    doc.save(b)
-    b.seek(0)
-    return b
+    sec = doc.sections[0]
+    sec.header.paragraphs[0].text = "Relatório de Auditoria Técnica"
+    sec.header.paragraphs[0].alignment = WD_ALIGN_PARAGRAPH.RIGHT
 
-def run_analysis(target_text, lib_ctx, manual_ctx, web_ctx, api_key, model_name):
-    """Executa a análise com o modelo completo, sem cortes de texto."""
-    genai.configure(api_key=api_key)
-    model = genai.GenerativeModel(model_name)
-    
-    # REMOVIDO: Limite de caracteres. 
-    # O modelo pago aguenta >1M tokens, por isso enviamos tudo.
-    
-    full_context = ""
-    if lib_ctx: full_context += f"\n=== BIBLIOTECA LEGISLATIVA ===\n{lib_ctx}"
-    if manual_ctx: full_context += f"\n=== UPLOADS MANUAIS ===\n{manual_ctx}"
-    if web_ctx: full_context += f"\n=== PESQUISA WEB ===\n{web_ctx}"
+    h = doc.add_heading("Auditoria de Conformidade Legal e Técnica", 0)
+    h.alignment = WD_ALIGN_PARAGRAPH.CENTER
+    doc.add_paragraph(f"Data: {datetime.now().strftime('%d/%m/%Y')}\n").alignment = WD_ALIGN_PARAGRAPH.CENTER
 
-    prompt = f"""
-    Atua como um **Consultor Especialista em Ambiente e Estratégia**.
-    Realiza uma AUDITORIA TÉCNICA E LEGAL (Protocolo PATE) ao documento fornecido.
+    if text:
+        p_status = doc.add_paragraph()
+        p_status.alignment = WD_ALIGN_PARAGRAPH.CENTER
+        status_text = "PARECER: ANÁLISE CONCLUÍDA"
+        color = RGBColor(0, 0, 0)
+        
+        if "INCONSISTENTE" in text.upper():
+            status_text = "⚠️ PARECER: INCONGRUÊNCIAS DETETADAS"
+            color = RGBColor(255, 0, 0)
+        elif "VALIDADO" in text.upper():
+            status_text = "✅ PARECER: DADOS CONSISTENTES"
+            color = RGBColor(0, 128, 0)
+            
+        r = p_status.add_run(status_text)
+        r.font.color.rgb = color
+        r.bold = True
+        r.font.size = Pt(14)
+        
+        doc.add_paragraph("---")
+        clean_text = re.sub(r'STATUS:.*', '', text, count=1).strip()
+        markdown_to_word(doc, clean_text)
+    else:
+        doc.add_paragraph("Erro: Sem conteúdo gerado.")
+    
+    append_legislation_section(doc)
+    bio = io.BytesIO()
+    doc.save(bio)
+    return bio
 
-    --- BASE DE CONFORMIDADE (A TUA "VERDADE") ---
-    {full_context}
+def create_decision_doc(text):
+    doc = Document()
+    style = doc.styles['Normal']
+    style.font.name = 'Arial'
+    style.font.size = Pt(10)
+    style.paragraph_format.space_after = Pt(6) 
     
-    --- DOCUMENTO ALVO ---
-    {target_text}
-    
-    ## INSTRUÇÕES DE ANÁLISE:
-    
-    1. **Resumo e Maturidade:** Identifica o objeto do plano/projeto e o seu estado de maturidade.
-    
-    2. **Check-up de Conformidade (Rigoroso):**
-       - Cruza as medidas propostas com a Legislação fornecida.
-       - Identifica conflitos com RAN, REN, Rede Natura 2000, ou metas climáticas (PNEC/Lei do Clima).
-       - Se detetares omissões (ex: falta de referência a AIA), assinala como Risco.
+    if not text: return io.BytesIO()
 
-    3. **Análise de Exequibilidade:**
-       - Critica a qualidade dos dados de base (ex: proxies vs dados de campo).
-       - Avalia a capacidade operacional e financeira proposta.
+    def get_tag(tag):
+        m = re.search(f"### {tag}(.*?)###", text, re.DOTALL)
+        if not m: m = re.search(f"### {tag}(.*)", text, re.DOTALL)
+        return m.group(1).strip() if m else "..."
 
-    4. **Matriz de Risco:**
-       - Apresenta os principais riscos ambientais e legais por nível de gravidade.
+    h = doc.add_heading("Análise prévia e decisão de sujeição a AIA", 0)
+    h.alignment = WD_ALIGN_PARAGRAPH.CENTER
+    doc.add_paragraph("")
 
-    5. **Recomendações Práticas:**
-       - 3 a 5 medidas corretivas imediatas ("Actionable Insights").
+    table = doc.add_table(rows=0, cols=2)
+    table.style = 'Table Grid'
+
+    def add_merged_header(txt):
+        r = table.add_row()
+        c = r.cells[0]
+        c.merge(r.cells[1])
+        p = c.paragraphs[0]
+        run = p.add_run(txt)
+        run.bold = True
+        c.paragraphs[0].paragraph_format.space_after = Pt(6)
+        return r
+
+    def add_row(label, val):
+        r = table.add_row()
+        r.cells[0].paragraphs[0].add_run(label).bold = True
+        r.cells[1].paragraphs[0].text = val
+        return r
+
+    def add_full_text(header, content):
+        add_merged_header(header)
+        r = table.add_row()
+        c = r.cells[0]
+        c.merge(r.cells[1])
+        c.paragraphs[0].text = "" # Limpar
+        paras = content.split('\n')
+        for para in paras:
+            if para.strip():
+                p = c.add_paragraph(para.strip())
+                p.alignment = WD_ALIGN_PARAGRAPH.JUSTIFY
+                p.paragraph_format.space_after = Pt(8)
+
+    add_merged_header("Identificação")
+    add_row("Designação do projeto", get_tag("CAMPO_DESIGNACAO"))
+    add_row("Tipologia", get_tag("CAMPO_TIPOLOGIA"))
+    add_row("Enquadramento", get_tag("CAMPO_ENQUADRAMENTO"))
+    add_row("Localização", get_tag("CAMPO_LOCALIZACAO"))
+    add_row("Áreas Sensíveis", get_tag("CAMPO_AREAS_SENSIVEIS"))
+    add_row("Proponente", get_tag("CAMPO_PROPONENTE"))
     
-    Usa linguagem técnica, formal e cita as secções do documento analisado.
-    """
+    add_full_text("Descrição", get_tag("CAMPO_DESCRICAO"))
+    add_merged_header("Fundamentação")
+    add_full_text("Caraterísticas", get_tag("CAMPO_CARATERISTICAS"))
+    add_full_text("Localização", get_tag("CAMPO_LOCALIZACAO_PROJETO"))
+    add_full_text("Impactes", get_tag("CAMPO_IMPACTES"))
+
+    add_merged_header("Decisão")
+    r = table.add_row()
+    c = r.cells[0]
+    c.merge(r.cells[1])
+    p = c.paragraphs[0]
+    run = p.add_run(get_tag("CAMPO_DECISAO"))
+    run.bold = True
+    run.font.size = Pt(12)
+    p.alignment = WD_ALIGN_PARAGRAPH.CENTER
     
-    # Sistema de Retry (útil mesmo na versão paga para falhas de rede)
-    for attempt in range(3):
+    add_full_text("Condicionantes", get_tag("CAMPO_CONDICIONANTES"))
+
+    doc.add_paragraph("\n")
+    doc.add_paragraph(f"Data: {datetime.now().strftime('%d/%m/%Y')}").alignment = WD_ALIGN_PARAGRAPH.LEFT
+    doc.add_paragraph("O Técnico,\n\n_______________________").alignment = WD_ALIGN_PARAGRAPH.RIGHT
+
+    bio = io.BytesIO()
+    doc.save(bio)
+    return bio
+
+# ==========================================
+# --- UI PRINCIPAL ---
+# ==========================================
+st.title("⚖️ Análise Caso a Caso (RJAIA)")
+st.markdown("### Auditoria Técnica e Decisão Fundamentada")
+
+if not api_key:
+    st.warning("⚠️ Por favor, configure a **Google API Key** no menu lateral esquerdo.")
+
+col1, col2, col3, col4 = st.columns(4)
+with col1: files_sim = st.file_uploader("📂 Simulação SILiAmb", type=['pdf'], accept_multiple_files=True, key=f"s_{st.session_state.uploader_key}")
+with col2: files_form = st.file_uploader("📂 Formulário", type=['pdf'], accept_multiple_files=True, key=f"f_{st.session_state.uploader_key}")
+with col3: files_doc = st.file_uploader("📂 Projeto/Memória", type=['pdf'], accept_multiple_files=True, key=f"p_{st.session_state.uploader_key}")
+with col4: files_leg = st.file_uploader("📜 Legislação Local", type=['pdf'], accept_multiple_files=True, key=f"l_{st.session_state.uploader_key}")
+
+st.markdown("---")
+
+if st.button("🚀 Processar", type="primary", use_container_width=True):
+    if not (files_sim and files_form and files_doc):
+        st.error("Carregue Simulação, Formulário e Projeto.")
+    elif not api_key:
+        st.error("API Key em falta (Menu Lateral).")
+    else:
         try:
-            return model.generate_content(prompt).text
+            with st.status("⚙️ A processar...", expanded=True) as status:
+                st.write("📄 Lendo documentos...")
+                ts = extract_text(files_sim, "SIM")
+                tf = extract_text(files_form, "FORM")
+                tp = extract_text(files_doc, "PROJ")
+                tl = extract_text(files_leg, "LOCAL") if files_leg else "N/A"
+                
+                st.write("🕵️ Auditoria (Modo Estruturado)...")
+                val = analyze_validation(ts, tf, tp, tl)
+                st.session_state.validation_result = val
+                
+                st.write("⚖️ Decisão...")
+                dec = generate_decision_text(ts, tf, tp, tl)
+                st.session_state.decision_result = dec
+                
+                status.update(label="Concluído!", state="complete")
         except Exception as e:
-            if "429" in str(e):
-                time.sleep(5 * (attempt + 1)) # Espera curta
-            else:
-                return f"❌ Erro na API: {str(e)}"
+            st.error(f"Erro: {e}")
+
+if st.session_state.validation_result:
+    c1, c2 = st.columns(2)
+    f_val = create_validation_doc(st.session_state.validation_result)
+    c1.download_button("📄 Relatório Auditoria", f_val.getvalue(), "Auditoria.docx", "application/vnd.openxmlformats-officedocument.wordprocessingml.document")
+    f_dec = create_decision_doc(st.session_state.decision_result)
+    c2.download_button("📝 Minuta Decisão", f_dec.getvalue(), "Decisao.docx", "application/vnd.openxmlformats-officedocument.wordprocessingml.document", type="primary")
     
-    return "❌ Erro persistente de conexão."
-
-# --- INTERFACE PRINCIPAL ---
-st.subheader("📄 Documento Alvo")
-uploaded_target = st.file_uploader("Carrega o Relatório/Plano", type="pdf", key=f"main_{st.session_state.uploader_key}")
-
-if uploaded_target and api_key:
-    if st.button("🚀 INICIAR ANÁLISE TOTAL", type="primary"):
-        with st.spinner(f"A processar contexto completo com {selected_model}..."):
-            
-            # 1. Extração de Texto
-            tgt_txt = get_pdf_text(uploaded_target)
-            
-            man_ctx = ""
-            if uploaded_legal_docs:
-                for f in uploaded_legal_docs: man_ctx += get_pdf_text(f)
-            
-            web_ctx = search_online(search_query) if use_web_search and search_query else ""
-            
-            # 2. Execução
-            result = run_analysis(tgt_txt, library_context, man_ctx, web_ctx, api_key, selected_model)
-            
-            # 3. Output
-            st.success("Análise concluída com sucesso!")
-            
-            col_res1, col_res2 = st.columns([1, 4])
-            with col_res1:
-                if st.button("🧹 Nova Análise"): limpar_dados()
-            
-            t1, t2 = st.tabs(["Relatório", "Exportar"])
-            with t1: st.markdown(result)
-            with t2:
-                st.download_button("Descarregar Word (.docx)", create_docx(result), "Relatorio_Ambiental.docx")
-                st.download_button("Descarregar Markdown (.md)", result, "Relatorio_Ambiental.md")
-
+    if st.button("🔄 Nova Análise"):
+        reset_app()
 
