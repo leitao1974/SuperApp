@@ -11,7 +11,13 @@ import io
 import time
 from datetime import datetime
 import re
+import sys, os
+sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
+import utils
 
+# ... (depois do st.set_page_config) ...
+
+utils.sidebar_comum()
 # ==========================================
 # --- 1. BASE DE DADOS JURÍDICA ---
 # ==========================================
@@ -499,3 +505,4 @@ if st.session_state.validation_result:
     c1.download_button("📄 Relatório Auditoria", f_val.getvalue(), "Auditoria.docx", "application/vnd.openxmlformats-officedocument.wordprocessingml.document")
     f_dec = create_decision_doc(st.session_state.decision_result)
     c2.download_button("📝 Minuta Decisão", f_dec.getvalue(), "Decisao.docx", "application/vnd.openxmlformats-officedocument.wordprocessingml.document", type="primary")
+
