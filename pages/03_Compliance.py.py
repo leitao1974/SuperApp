@@ -1,11 +1,28 @@
 import sys
 import os
 
-# --- CORREÇÃO DE CAMINHOS (CRÍTICO) ---
-# Permite importar 'utils.py' e 'legislacao.py' da pasta raiz
-sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
+# --- INJEÇÃO DE CAMINHO (Obrigatório para Multipage Apps) ---
+# 1. Obtém o caminho da pasta atual (onde está este script)
+current_dir = os.path.dirname(os.path.abspath(__file__))
+# 2. Obtém o caminho da pasta "pai" (a raiz do projeto SuperApp)
+root_dir = os.path.dirname(current_dir)
+# 3. Adiciona a raiz ao topo da lista de procura do Python
+sys.path.insert(0, root_dir)
 
-import utils
+# --- IMPORTS AGORA VÃO FUNCIONAR ---
+try:
+    import utils
+    import legislacao
+except ImportError as e:
+    # Se falhar, vamos imprimir onde o Python está a procurar para ajudar no debug
+    import streamlit as st
+    st.error(f"Erro Crítico: Não encontro o ficheiro 'utils.py' ou 'legislacao.py'.")
+    st.write(f"Estou à procura em: {root_dir}")
+    st.write(f"Erro detalhado: {e}")
+    st.stop()
+
+import streamlit as st
+# ... Daqui para baixo continua o seu código normal ...
 import streamlit as st
 import google.generativeai as genai
 from pypdf import PdfReader
@@ -241,4 +258,5 @@ if uploaded_target and api_key:
             with t2:
                 st.download_button("Descarregar Word (.docx)", create_docx(result), "Relatorio_Ambiental.docx")
                 st.download_button("Descarregar Markdown (.md)", result, "Relatorio_Ambiental.md")
+
 
