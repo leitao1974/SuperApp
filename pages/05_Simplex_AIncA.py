@@ -1,10 +1,41 @@
 import sys
 import os
 
-# --- CORREÇÃO DE CAMINHOS ---
-sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
+# --- 1. LIGAÇÃO AO UTILS (CRÍTICO) ---
+# Isto garante que encontramos o ficheiro 'utils.py' na pasta de trás
+current_dir = os.path.dirname(os.path.abspath(__file__))
+root_dir = os.path.dirname(current_dir)
+sys.path.insert(0, root_dir)
 
-import utils
+import streamlit as st
+import utils # Importa o nosso gestor de chaves
+
+# --- 2. CONFIGURAÇÃO DA PÁGINA ---
+st.set_page_config(page_title="Compliance Ambiental", page_icon="🌿", layout="wide")
+
+# --- 3. CARREGAR BARRA LATERAL ---
+# Isto vai mostrar a chave que já inseriu, sem pedir de novo
+utils.sidebar_comum()
+
+# --- 4. VERIFICAÇÃO DE SEGURANÇA ---
+# Lemos a chave diretamente da memória global
+api_key = st.session_state.get("api_key", "")
+
+if not api_key:
+    st.error("🛑 **ACESSO BLOQUEADO**: A API Key não foi detetada.")
+    st.info("⬅️ Por favor, insira a chave na **barra lateral esquerda** e pressione Enter.")
+    st.stop() # Pára o código aqui até haver chave
+
+# ==========================================
+# DAQUI PARA BAIXO: O SEU CÓDIGO DA APP
+# ==========================================
+import google.generativeai as genai
+# ... (Resto dos imports e lógica da app ambiente.py) ...
+
+st.title("🌿 Módulo de Ambiente Ativo")
+st.write("A chave está a funcionar e pronta a usar!")
+
+# (Cole aqui o resto do seu código original do módulo 3...)
 import streamlit as st
 import google.generativeai as genai
 import pypdf
@@ -147,4 +178,5 @@ if st.session_state['analise']:
     st.markdown(st.session_state['analise'])
     
     doc = create_word_docx(st.session_state['analise'], st.session_state['n_p'], st.session_state['n_l'])
+
     st.download_button("📥 Download Word", doc, "Relatorio_Simplex.docx", "application/vnd.openxmlformats-officedocument.wordprocessingml.document")
