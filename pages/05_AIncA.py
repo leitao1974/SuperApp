@@ -1,5 +1,8 @@
 import sys
 import os
+import re
+import time
+from io import BytesIO
 
 # --- 1. CONFIGURAÇÃO DE CAMINHOS ---
 current_dir = os.path.dirname(os.path.abspath(__file__))
@@ -12,9 +15,6 @@ import google.generativeai as genai
 import pypdf
 from docx import Document
 from docx.shared import Pt, RGBColor
-from io import BytesIO
-import time
-import re
 
 # --- 2. CONFIGURAÇÃO DA PÁGINA ---
 st.set_page_config(
@@ -61,13 +61,14 @@ SECTOR_GUIDES = {
 # ==========================================
 
 def get_available_models(key):
-    """Lista modelos disponíveis."""
+    """Lista modelos disponíveis na API."""
     try:
         genai.configure(api_key=key)
         models = [m.name for m in genai.list_models() if 'generateContent' in m.supported_generation_methods]
         return models
     except:
-        return ["models/gemini-1.5-flash", "models/gemini-1.5-pro"]
+        # Fallback genérico se a API falhar a listagem
+        return ["models/gemini-2.0-flash", "models/gemini-1.5-flash", "models/gemini-1.5-pro"]
 
 def get_text_with_page_markers(file_list):
     """
@@ -103,7 +104,7 @@ def create_word_docx(text, p_files, l_files, tipologia):
     doc = Document()
     
     # Estilo do Título
-    title = doc.add_heading('Parecer Técnico AIncA', 0)
+    title = doc.add_heading('Parecer Técnico AIncA Fundamentado', 0)
     title.alignment = 1 # Center
     
     # Metadados
@@ -111,11 +112,11 @@ def create_word_docx(text, p_files, l_files, tipologia):
     runner = p.add_run(f"Tipologia: {tipologia}\n")
     runner.bold = True
     p.add_run(f"Data da Análise: {time.strftime('%d/%m/%Y')}\n")
-    p.add_run(f"Documentos: {', '.join(p_files) if p_files else 'N/A'}")
+    p.add_run(f"Documentos Analisados: {', '.join(p_files) if p_files else 'N/A'}")
     
     doc.add_paragraph("---")
     
-    # Processamento do Markdown
+    # Processamento do Markdown para Word
     for line in text.split('\n'):
         line = line.strip()
         if not line: continue
@@ -130,12 +131,13 @@ def create_word_docx(text, p_files, l_files, tipologia):
         elif line.startswith('- ') or line.startswith('* '): 
             p = doc.add_paragraph(style='List Bullet')
             # Tenta detetar citações [Doc X, Pag Y] e pôr a negrito
-            parts = re.split(r'(\[.*?Pág.*?\])', line[2:])
+            parts = re.split(r'(\[.*?Pág.*?\])', line[2:], flags=re.IGNORECASE)
             for part in parts:
                 run = p.add_run(part)
                 if "[" in part and "Pág" in part:
                     run.bold = True
-                    run.font.color.rgb = RGBColor(100, 100, 100) # Cinza para a fonte
+                    run.font.size = Pt(9)
+                    run.font.color.rgb = RGBColor(80, 80, 80) # Cinza escuro
                     
         elif line.startswith('>'): # Citações transcritas
             p = doc.add_paragraph(style='Intense Quote')
@@ -150,6 +152,7 @@ def create_word_docx(text, p_files, l_files, tipologia):
     return buffer
 
 def generate_with_retry(model, prompt, max_retries=3):
+    """Tenta gerar com gestão automática de erros de cota (429)."""
     wait_time = 15 
     for attempt in range(max_retries):
         try:
@@ -158,7 +161,7 @@ def generate_with_retry(model, prompt, max_retries=3):
             error_msg = str(e)
             if "429" in error_msg or "quota" in error_msg.lower():
                 if attempt < max_retries - 1:
-                    st.warning(f"⚠️ Limite de cota ({model.model_name}). Aguarde {wait_time}s...")
+                    st.warning(f"⚠️ Cota momentânea atingida ({model.model_name}). Aguarde {wait_time}s para nova tentativa automática...")
                     time.sleep(wait_time)
                     wait_time += 15
                 else:
@@ -177,27 +180,25 @@ with st.sidebar:
     
     opcoes_modelos = get_available_models(api_key)
     
-    # LÓGICA DE PRIORIDADE: FLASH 2.5 > FLASH 1.5 > OUTROS
+    # --- LÓGICA DE PRIORIDADE REFORÇADA ---
+    # Ordem de preferência: 2.5 Flash -> 2.0 Flash -> 1.5 Flash -> Qualquer Flash -> Outros
+    priority_targets = ["2.5-flash", "2.0-flash", "1.5-flash", "flash"]
     idx_padrao = 0
-    found_flash = False
+    found = False
     
-    for i, m in enumerate(opcoes_modelos):
-        if "flash" in m.lower() and "2.5" in m:
-            idx_padrao = i
-            found_flash = True
-            break
-            
-    if not found_flash:
+    for target in priority_targets:
         for i, m in enumerate(opcoes_modelos):
-            if "flash" in m.lower():
+            if target in m.lower():
                 idx_padrao = i
+                found = True
                 break
+        if found: break
             
     selected_model = st.selectbox(
         "Modelo:", 
         opcoes_modelos, 
         index=idx_padrao,
-        help="Modelos Flash são recomendados para processar documentos com muitas páginas."
+        help="O sistema dá prioridade aos modelos Flash mais recentes para maior rapidez e eficiência."
     )
     
     st.divider()
@@ -226,23 +227,22 @@ if st.button("🚀 Gerar Relatório Fundamentado", type="primary", use_container
             
             # 2. Configuração
             genai.configure(api_key=api_key)
-            status.write(f"🤖 A analisar com {selected_model}...")
+            status.write(f"🤖 A analisar com **{selected_model}**...")
             model = genai.GenerativeModel(selected_model)
             
             guia_especifico = SECTOR_GUIDES[selected_sector]
             
             # 3. Prompt de Auditoria Rigorosa
             prompt = f"""
-            Atua como Perito Sénior em Avaliação Ambiental (Especialista AIncA).
+            Atua como Perito Sénior em Avaliação Ambiental (Especialista AIncA e Rede Natura 2000).
             A tua tarefa é produzir um RELATÓRIO TÉCNICO DE FUNDAMENTAÇÃO.
 
             === REGRAS DE OURO (OBRIGATÓRIAS) ===
-            1. **CITAÇÃO DE FACTOS:** Qualquer afirmação sobre o projeto (distâncias, áreas, características) DEVE ter a fonte.
-               Formato: "O projeto ocupa 2ha..." [DOC: Memoria.pdf | PÁG. 12].
+            1. **CITAÇÃO DE FACTOS:** Qualquer afirmação sobre o projeto (distâncias, áreas, características) DEVE ter a fonte exata.
+               Formato obrigatório: "O projeto ocupa 2ha..." [DOC: NomeDoFicheiro | PÁG. X].
             2. **TRANSCRIÇÃO:** Sempre que possível, transcreve pequenas frases do documento original entre aspas para provar o ponto.
                Ex: Como refere o promotor: "...não se preveem afetações..." [DOC: X | PÁG. Y].
-            3. **FUNDAMENTAÇÃO LEGAL:** Cita sempre o artigo da lei.
-               Ex: "Conforme Art. 10.º do DL 140/99...".
+            3. **FUNDAMENTAÇÃO LEGAL:** Cita sempre o artigo da lei aplicável (DL 140/99).
 
             === CONTEXTO TÉCNICO ===
             Setor: {selected_sector}
@@ -255,12 +255,12 @@ if st.button("🚀 Gerar Relatório Fundamentado", type="primary", use_container
             === ESTRUTURA DO RELATÓRIO ===
             
             ## 1. DADOS DE IDENTIFICAÇÃO E ENQUADRAMENTO
-            (Identifica o Promotor, Localização e Resumo do Projeto com base nos documentos).
+            (Identifica o Promotor, Localização e Resumo do Projeto com base nos documentos. Cita a página da Memória Descritiva).
             
             ## 2. TRIAGEM JURÍDICA (SCREENING)
             - **Gestão do Sítio:** O projeto é para gestão da ZEC/ZPE? (Cita onde leste isto).
             - **Concorrência com AIA:** Verifica se o projeto cai nos Anexos do DL 151-B/2013. Se sim, conclui que a AIncA é integrada na AIA.
-            - **Afetação Significativa:** Distância à Rede Natura 2000 mais próxima. Há sobreposição?
+            - **Afetação Significativa:** Distância à Rede Natura 2000 mais próxima. Há sobreposição? [Cita Pág.]
             
             ## 3. ANÁLISE DE INCIDÊNCIAS (FACTOS E EVIDÊNCIAS)
             (Aqui deves usar as citações de página intensivamente).
@@ -299,6 +299,6 @@ if st.button("🚀 Gerar Relatório Fundamentado", type="primary", use_container
             except Exception as e:
                 status.update(label="❌ Erro", state="error")
                 if "429" in str(e):
-                    st.error("Cota excedida. Tente novamente em 1 minuto.")
+                    st.error(f"Cota excedida no modelo {selected_model}. Tente novamente em 1 minuto.")
                 else:
                     st.error(f"Erro: {e}")
