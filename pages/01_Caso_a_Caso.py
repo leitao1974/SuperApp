@@ -36,7 +36,6 @@ st.title("🌿 Módulo de Ambiente Ativo")
 st.write("A chave está a funcionar e pronta a usar!")
 
 # (Cole aqui o resto do seu código original do módulo 3...)
-# ... Daqui para baixo continua o seu código normal ...
 import streamlit as st
 from pypdf import PdfReader
 from docx import Document
@@ -238,4 +237,5 @@ if st.session_state.validation_result:
     f_dec = create_decision_doc(st.session_state.decision_result)
 
     c2.download_button("📝 Minuta Decisão", f_dec.getvalue(), "Decisao.docx", type="primary")
+
 
