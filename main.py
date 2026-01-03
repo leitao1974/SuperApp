@@ -1,42 +1,39 @@
 import streamlit as st
 import utils
 
-# --- CONFIGURAÇÃO DA PÁGINA ---
+# 1. Configuração da Página
 st.set_page_config(
     page_title="Main",
     page_icon="🌍",
     layout="wide"
 )
 
-# --- BARRA LATERAL (DO UTILS) ---
-# Isto garante que a API Key se mantém
+# 2. Carregar a Barra Lateral (Onde a chave é gerida)
 try:
     utils.sidebar_comum()
 except Exception as e:
-    st.error(f"Erro ao carregar menu lateral: {e}")
+    st.error(f"Erro ao carregar menu: {e}")
 
-# --- TÍTULO PRINCIPAL ---
-st.title("Main") 
+# 3. Conteúdo Principal
+st.title("🌍 Plataforma de Avaliação Ambiental")
 
-# --- CONTEÚDO ---
-# Recuperar o contexto para personalizar a mensagem
-contexto = st.session_state.get("contexto_utilizador", "Analista Geral")
+# Verifica se já temos chave (vem do utils)
+chave_existe = bool(st.session_state.get("api_key"))
 
-st.markdown(f"""
-### Bem-vindo à Plataforma de Avaliação Ambiental.
-Perfil ativo: **{contexto}**.
+if chave_existe:
+    st.info("👋 Bem-vindo! A sua **API Key está ativa**. Pode navegar para qualquer módulo no menu esquerdo.")
+else:
+    st.warning("⬅️ **Comece aqui:** Insira a sua API Key na barra lateral esquerda para desbloquear a plataforma.")
 
-Selecione um módulo no menu lateral esquerdo para começar:
-
+st.markdown("""
+---
+### Módulos Disponíveis:
 | Módulo | Função |
 | :--- | :--- |
-| **01. Caso a Caso** | Validação de critérios de sujeição a AIA (Anexo II) |
-| **02. Prazos AIA** | Calculadora de Prazos Legais e Cronogramas |
-| **03. Ambiente** | Auditoria de conformidade (antigo Compliance) e Pesquisa Web |
-| **04. Auditor EIA** | Análise técnica de Estudos de Impacte Ambiental |
-| **05. Simplex AIncA** | Verificação de dispensas (DL 11/2023) |
-
----
-ℹ️ *A API Key definida no menu lateral é partilhada por todas as ferramentas.*
+| **01. Caso a Caso** | Validação RJAIA (Anexo II) |
+| **02. Prazos AIA** | Calculadora de Prazos Legais |
+| **03. Ambiente** | Compliance e Pesquisa Web |
+| **04. Auditor EIA** | Análise de Grandes Processos |
+| **05. Simplex** | Verificação DL 11/2023 |
 """)
 
