@@ -2,7 +2,6 @@ import sys
 import os
 
 # --- 1. CONFIGURAÇÃO DE CAMINHOS ---
-# Garante que o Python encontra o utils.py na pasta raiz
 current_dir = os.path.dirname(os.path.abspath(__file__))
 root_dir = os.path.dirname(current_dir)
 sys.path.insert(0, root_dir)
@@ -12,8 +11,10 @@ import streamlit as st
 import google.generativeai as genai
 import pypdf
 from docx import Document
+from docx.shared import Pt, RGBColor
 from io import BytesIO
 import time
+import re
 
 # --- 2. CONFIGURAÇÃO DA PÁGINA ---
 st.set_page_config(
@@ -33,10 +34,10 @@ st.title("🦅 Avaliação de Incidências Ambientais (AIncA)")
 st.markdown("""
 **Enquadramento Legal:** Decreto-Lei n.º 140/99, de 24 de abril (alterado pelos DL n.º 49/2005 e DL n.º 156-A/2013).
 
-Este módulo apoia a avaliação de ações, planos ou projetos **não diretamente relacionados com a gestão** de um Sítio da Rede Natura 2000 (ZEC/ZPE), mas suscetíveis de o afetar de forma significativa.
+Este módulo gera um **Relatório Técnico Fundamentado**, cruzando evidências do projeto (com referência à página) com a legislação aplicável.
 """)
 
-# Recuperar API Key da memória global
+# Recuperar API Key
 api_key = st.session_state.get("api_key", "")
 if not api_key:
     st.warning("⚠️ **Atenção:** API Key não detetada. Por favor insira-a no menu lateral esquerdo.")
@@ -60,18 +61,19 @@ SECTOR_GUIDES = {
 # ==========================================
 
 def get_available_models(key):
-    """Lista modelos disponíveis na API (Flash vs Pro) de forma dinâmica."""
+    """Lista modelos disponíveis."""
     try:
         genai.configure(api_key=key)
-        # Filtra apenas modelos capazes de gerar conteúdo de texto
         models = [m.name for m in genai.list_models() if 'generateContent' in m.supported_generation_methods]
         return models
     except:
-        # Fallback caso a listagem falhe
-        return ["models/gemini-1.5-pro-latest", "models/gemini-1.5-flash"]
+        return ["models/gemini-1.5-flash", "models/gemini-1.5-pro"]
 
-def get_text_from_multiple_files(file_list):
-    """Extrai texto de múltiplos PDFs carregados."""
+def get_text_with_page_markers(file_list):
+    """
+    Extrai texto inserindo marcadores de página explícitos.
+    Isso permite à IA citar: 'Conforme Pág. 12 do ficheiro X'.
+    """
     combined_text = ""
     file_names = []
     if not file_list: return None, None
@@ -79,37 +81,66 @@ def get_text_from_multiple_files(file_list):
     for uploaded_file in file_list:
         try:
             reader = pypdf.PdfReader(uploaded_file)
-            file_text = ""
-            for page in reader.pages:
-                file_text += page.extract_text() or "" 
+            doc_name = uploaded_file.name
             
-            combined_text += f"\n--- FICHEIRO: {uploaded_file.name} ---\n{file_text}\n"
-            file_names.append(uploaded_file.name)
+            combined_text += f"\n\n=== INÍCIO DO DOCUMENTO: {doc_name} ===\n"
+            
+            for i, page in enumerate(reader.pages):
+                content = page.extract_text() or "[Página em branco ou imagem]"
+                # INJEÇÃO DE METADADOS PARA A IA LER
+                combined_text += f"\n[DOC: {doc_name} | PÁG. {i+1}]\n{content}\n"
+            
+            combined_text += f"=== FIM DO DOCUMENTO: {doc_name} ===\n"
+            file_names.append(doc_name)
+            
         except Exception as e:
             st.error(f"Erro a ler {uploaded_file.name}: {e}")
             
     return combined_text, file_names
 
 def create_word_docx(text, p_files, l_files, tipologia):
-    """Gera um ficheiro Word formatado com o parecer."""
+    """Gera Word com formatação profissional."""
     doc = Document()
-    doc.add_heading('Parecer Técnico AIncA (Rede Natura 2000)', 0)
     
-    doc.add_paragraph(f"Tipologia do Projeto: {tipologia}")
-    doc.add_paragraph(f"Documentos Analisados: {', '.join(p_files) if p_files else 'N/A'}")
+    # Estilo do Título
+    title = doc.add_heading('Parecer Técnico AIncA', 0)
+    title.alignment = 1 # Center
+    
+    # Metadados
+    p = doc.add_paragraph()
+    runner = p.add_run(f"Tipologia: {tipologia}\n")
+    runner.bold = True
+    p.add_run(f"Data da Análise: {time.strftime('%d/%m/%Y')}\n")
+    p.add_run(f"Documentos: {', '.join(p_files) if p_files else 'N/A'}")
+    
     doc.add_paragraph("---")
     
-    # Processa Markdown simples para Word
+    # Processamento do Markdown
     for line in text.split('\n'):
         line = line.strip()
         if not line: continue
         
         if line.startswith('## '): 
-            doc.add_heading(line.replace('##', '').strip(), 1)
+            h = doc.add_heading(line.replace('##', '').strip(), 1)
+            h.style.font.color.rgb = RGBColor(0, 51, 102) # Azul escuro
+            
         elif line.startswith('### '): 
-            doc.add_heading(line.replace('###', '').strip(), 2)
+            h = doc.add_heading(line.replace('###', '').strip(), 2)
+            
         elif line.startswith('- ') or line.startswith('* '): 
-            doc.add_paragraph(line[2:], style='List Bullet')
+            p = doc.add_paragraph(style='List Bullet')
+            # Tenta detetar citações [Doc X, Pag Y] e pôr a negrito
+            parts = re.split(r'(\[.*?Pág.*?\])', line[2:])
+            for part in parts:
+                run = p.add_run(part)
+                if "[" in part and "Pág" in part:
+                    run.bold = True
+                    run.font.color.rgb = RGBColor(100, 100, 100) # Cinza para a fonte
+                    
+        elif line.startswith('>'): # Citações transcritas
+            p = doc.add_paragraph(style='Intense Quote')
+            p.add_run(line.replace('>', '').strip()).italic = True
+            
         else: 
             doc.add_paragraph(line)
         
@@ -118,141 +149,156 @@ def create_word_docx(text, p_files, l_files, tipologia):
     buffer.seek(0)
     return buffer
 
+def generate_with_retry(model, prompt, max_retries=3):
+    wait_time = 15 
+    for attempt in range(max_retries):
+        try:
+            return model.generate_content(prompt, request_options={"timeout": 600})
+        except Exception as e:
+            error_msg = str(e)
+            if "429" in error_msg or "quota" in error_msg.lower():
+                if attempt < max_retries - 1:
+                    st.warning(f"⚠️ Limite de cota ({model.model_name}). Aguarde {wait_time}s...")
+                    time.sleep(wait_time)
+                    wait_time += 15
+                else:
+                    raise e
+            else:
+                raise e
+
 # ==========================================
 # --- INTERFACE ---
 # ==========================================
 
-# --- A. BARRA LATERAL (CONFIGURAÇÕES) ---
+# --- A. BARRA LATERAL ---
 with st.sidebar:
     st.divider()
     st.markdown("### 🧠 Motor de IA")
     
-    # 1. Seletor de Modelo Dinâmico
-    # Permite ao utilizador escolher entre Flash (rápido) ou Pro (inteligente)
     opcoes_modelos = get_available_models(api_key)
     
-    # Tenta selecionar o 'Pro' por defeito (Recomendado para análises jurídicas AIncA)
+    # LÓGICA DE PRIORIDADE: FLASH 2.5 > FLASH 1.5 > OUTROS
     idx_padrao = 0
+    found_flash = False
+    
     for i, m in enumerate(opcoes_modelos):
-        if "pro" in m or "1.5-pro" in m:
+        if "flash" in m.lower() and "2.5" in m:
             idx_padrao = i
+            found_flash = True
             break
             
+    if not found_flash:
+        for i, m in enumerate(opcoes_modelos):
+            if "flash" in m.lower():
+                idx_padrao = i
+                break
+            
     selected_model = st.selectbox(
-        "Modelo de Análise:", 
+        "Modelo:", 
         opcoes_modelos, 
         index=idx_padrao,
-        help="Use modelos 'Pro' para maior rigor jurídico na análise e 'Flash' para rapidez."
+        help="Modelos Flash são recomendados para processar documentos com muitas páginas."
     )
     
     st.divider()
-    
-    # 2. Tipologia do Projeto
     st.header("Contexto Setorial")
-    selected_sector = st.selectbox(
-        "Selecione o setor para carregar critérios específicos:",
-        list(SECTOR_GUIDES.keys())
-    )
-    st.info(f"📚 **Referência Técnica:** {SECTOR_GUIDES[selected_sector]}")
+    selected_sector = st.selectbox("Setor:", list(SECTOR_GUIDES.keys()))
+    st.info(f"📚 {SECTOR_GUIDES[selected_sector]}")
 
-# --- B. ÁREA PRINCIPAL (UPLOADS) ---
+# --- B. UPLOADS ---
 col1, col2 = st.columns(2)
 with col1:
-    files_p = st.file_uploader(
-        "1. Projeto (Memória Descritiva / Peças Desenhadas)", 
-        type=["pdf"], 
-        accept_multiple_files=True
-    )
+    files_p = st.file_uploader("1. Projeto (Obrigatório)", type=["pdf"], accept_multiple_files=True)
 with col2:
-    files_l = st.file_uploader(
-        "2. Cartografia / Estudo de Incidências (Opcional)", 
-        type=["pdf"], 
-        accept_multiple_files=True
-    )
+    files_l = st.file_uploader("2. Cartografia/Anexos (Opcional)", type=["pdf"], accept_multiple_files=True)
 
-# --- C. BOTÃO DE AÇÃO E LÓGICA ---
-if st.button("🚀 Analisar Incidências (AIncA)", type="primary", use_container_width=True):
+# --- C. AÇÃO ---
+if st.button("🚀 Gerar Relatório Fundamentado", type="primary", use_container_width=True):
     if not files_p:
-        st.error("⚠️ Por favor carregue os ficheiros do projeto (Campo 1).")
+        st.error("⚠️ Carregue os ficheiros do projeto.")
     else:
-        # Spinner/Status expandível para mostrar progresso
-        with st.status("A realizar Avaliação de Incidências Ambientais...", expanded=True) as status:
+        with st.status("A realizar Auditoria AIncA...", expanded=True) as status:
             
-            # 1. Leitura dos ficheiros
-            status.write("📖 A ler documentos do projeto...")
-            text_p, names_p = get_text_from_multiple_files(files_p)
-            text_l, names_l = get_text_from_multiple_files(files_l)
+            # 1. Leitura com Mapeamento de Páginas
+            status.write("📖 A indexar páginas e documentos...")
+            text_p, names_p = get_text_with_page_markers(files_p)
+            text_l, names_l = get_text_with_page_markers(files_l)
             
-            # 2. Configuração da IA com o modelo escolhido
+            # 2. Configuração
             genai.configure(api_key=api_key)
-            status.write(f"🤖 A carregar motor de inteligência: **{selected_model}**...")
+            status.write(f"🤖 A analisar com {selected_model}...")
             model = genai.GenerativeModel(selected_model)
             
-            # 3. Construção do Prompt (Rigoroso e Jurídico)
             guia_especifico = SECTOR_GUIDES[selected_sector]
             
+            # 3. Prompt de Auditoria Rigorosa
             prompt = f"""
-            Atua como Perito Sénior em Conservação da Natureza e Avaliação Ambiental.
-            Realiza uma pré-avaliação AIncA (Avaliação de Incidências Ambientais) rigorosa.
+            Atua como Perito Sénior em Avaliação Ambiental (Especialista AIncA).
+            A tua tarefa é produzir um RELATÓRIO TÉCNICO DE FUNDAMENTAÇÃO.
+
+            === REGRAS DE OURO (OBRIGATÓRIAS) ===
+            1. **CITAÇÃO DE FACTOS:** Qualquer afirmação sobre o projeto (distâncias, áreas, características) DEVE ter a fonte.
+               Formato: "O projeto ocupa 2ha..." [DOC: Memoria.pdf | PÁG. 12].
+            2. **TRANSCRIÇÃO:** Sempre que possível, transcreve pequenas frases do documento original entre aspas para provar o ponto.
+               Ex: Como refere o promotor: "...não se preveem afetações..." [DOC: X | PÁG. Y].
+            3. **FUNDAMENTAÇÃO LEGAL:** Cita sempre o artigo da lei.
+               Ex: "Conforme Art. 10.º do DL 140/99...".
+
+            === CONTEXTO TÉCNICO ===
+            Setor: {selected_sector}
+            Guia de Referência: {guia_especifico}
             
-            === QUADRO LEGAL DE REFERÊNCIA ===
-            1. Decreto-Lei n.º 140/99 (Rede Natura 2000), atualizado pelo DL 49/2005.
-            2. Artigo 10.º: A AIncA aplica-se se o projeto afetar ZEC/ZPE de forma significativa e NÃO for de gestão direta da área.
-            3. RELAÇÃO COM AIA: Verifica prioritariamente se o projeto está sujeito a AIA (DL 151-B/2013). Se estiver, a AIncA é integrada na AIA.
-            
-            === GUIAS TÉCNICOS ESPECÍFICOS APLICÁVEIS ===
-            Setor selecionado: {selected_sector}
-            Referência técnica a utilizar: {guia_especifico}
-            (Usa os critérios destes manuais para avaliar impactos, ex: mortalidade de avifauna, fragmentação de habitat, efeito barreira).
-            
-            === DADOS DO PROJETO ===
+            === DADOS DO PROJETO (COM MARCADORES DE PÁGINA) ===
             {text_p}
             {text_l}
             
-            === TAREFA: RELATÓRIO TÉCNICO AIncA ===
-            Produz um parecer estruturado seguindo as 4 fases metodológicas da Comissão Europeia (2011):
+            === ESTRUTURA DO RELATÓRIO ===
             
-            ## 1. TRIAGEM (SCREENING) E ENQUADRAMENTO
-            - O projeto é necessário para a gestão do Sítio? (Se sim, dispensa AIncA).
-            - O projeto está sujeito a AIA geral (Anexos DL 151-B/2013)? Se sim, deve remeter para procedimento de AIA.
-            - Se não for AIA nem Gestão: Existe probabilidade de afetar ZEC/ZPE (efeitos diretos, indiretos ou cumulativos)?
+            ## 1. DADOS DE IDENTIFICAÇÃO E ENQUADRAMENTO
+            (Identifica o Promotor, Localização e Resumo do Projeto com base nos documentos).
             
-            ## 2. AVALIAÇÃO ADEQUADA (PREVISÃO DE IMPACTES)
-            - Identifica valores naturais concretos que podem ser afetados (Habitats Anexo I, Espécies Anexo II, Aves Anexo I Diretiva Aves).
-            - Analisa impactos na INTEGRIDADE do Sítio (estrutura e função ecológica).
-            - Para o setor {selected_sector}, considera os impactos específicos conhecidos.
+            ## 2. TRIAGEM JURÍDICA (SCREENING)
+            - **Gestão do Sítio:** O projeto é para gestão da ZEC/ZPE? (Cita onde leste isto).
+            - **Concorrência com AIA:** Verifica se o projeto cai nos Anexos do DL 151-B/2013. Se sim, conclui que a AIncA é integrada na AIA.
+            - **Afetação Significativa:** Distância à Rede Natura 2000 mais próxima. Há sobreposição?
             
-            ## 3. SOLUÇÕES ALTERNATIVAS E MITIGAÇÃO
-            - O projeto apresenta alternativas de localização ou traçado para evitar áreas sensíveis?
-            - As medidas de mitigação propostas são eficazes? Garantem a inexistência de impacto residual significativo?
+            ## 3. ANÁLISE DE INCIDÊNCIAS (FACTOS E EVIDÊNCIAS)
+            (Aqui deves usar as citações de página intensivamente).
+            - Descritor Fauna/Flora: O que diz o projeto? [Cita Pág.]
+            - Impactos na Integridade: O que diz o estudo de incidências? [Cita Pág.]
+            - Cumprimento do Guia Setorial ({selected_sector}).
             
-            ## 4. CONCLUSÃO TÉCNICA E RECOMENDAÇÕES
-            - O projeto pode ser aprovado tal como está?
-            - Requer AIncA aprofundada?
-            - Requer medidas de compensação (apenas aplicável se houver Razões Imperativas de Reconhecido Interesse Público - RIRIP)?
+            ## 4. EVIDÊNCIAS TRANSCRITAS
+            (Lista 3 a 5 frases chave copiadas ipsis verbis dos documentos que suportam a tua decisão).
             
-            Usa linguagem técnica adequada, cita a legislação e os manuais de referência indicados.
+            ## 5. CONCLUSÃO E PARECER TÉCNICO
+            - O projeto carece de AIncA aprofundada?
+            - Está dispensado?
+            - Que medidas de mitigação são essenciais?
             """
 
             try:
-                # 4. Envio para a IA (Com timeout aumentado para 600s para suportar modelos Pro)
-                response = model.generate_content(prompt, request_options={"timeout": 600})
-                status.update(label="✅ Análise Concluída com Sucesso", state="complete")
+                # 4. Geração
+                response = generate_with_retry(model, prompt)
                 
-                # 5. Apresentação de Resultados
-                st.markdown("### 🦅 Parecer Técnico AIncA")
+                status.update(label="✅ Relatório Gerado", state="complete")
+                
+                # Visualização
+                st.markdown("### 🦅 Relatório Técnico Fundamentado")
                 st.markdown(response.text)
                 
-                # 6. Geração do Documento Word
+                # Download
                 doc = create_word_docx(response.text, names_p, names_l, selected_sector)
-                
                 st.download_button(
-                    label="📥 Descarregar Parecer (Word)", 
-                    data=doc, 
-                    file_name="Parecer_AIncA.docx", 
-                    mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+                    "📥 Descarregar Relatório (Word)", 
+                    doc, 
+                    "Relatorio_AIncA_Fundamentado.docx", 
+                    "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
                 )
                 
             except Exception as e:
-                status.update(label="❌ Erro na Análise", state="error")
-                st.error(f"Ocorreu um erro durante a comunicação com a IA: {e}")
+                status.update(label="❌ Erro", state="error")
+                if "429" in str(e):
+                    st.error("Cota excedida. Tente novamente em 1 minuto.")
+                else:
+                    st.error(f"Erro: {e}")
