@@ -1,7 +1,8 @@
 import sys
 import os
 
-# --- CAMINHOS ---
+# --- 1. CONFIGURAÇÃO DE CAMINHOS ---
+# Garante que encontramos o utils.py na pasta raiz
 current_dir = os.path.dirname(os.path.abspath(__file__))
 root_dir = os.path.dirname(current_dir)
 sys.path.insert(0, root_dir)
@@ -20,22 +21,29 @@ import tempfile
 import re
 from datetime import datetime
 
-# --- CONFIGURAÇÃO ---
-st.set_page_config(page_title="Auditor EIA Pro", page_icon="⚖️", layout="wide")
+# --- 2. CONFIGURAÇÃO DA PÁGINA ---
+st.set_page_config(
+    page_title="Auditor EIA Pro", 
+    page_icon="⚖️", 
+    layout="wide"
+)
 
-# Menu Lateral
+# --- 3. BARRA LATERAL COMUM ---
+# Carrega o menu e a gestão da API Key
 try:
     utils.sidebar_comum()
 except:
     pass
 
+# --- 4. TÍTULO E VERIFICAÇÃO DE CHAVE ---
 st.title("⚖️ Auditor EIA Pro (File API)")
 st.info("ℹ️ Utilize este módulo para Processos EIA completos (Tomo I, RNT, Anexos). Suporta ficheiros > 200 páginas via Cloud.")
 
-# Recuperar API Key
+# Recupera chave silenciosamente da memória global
 api_key = st.session_state.get("api_key", "")
 if not api_key:
-    st.warning("⚠️ Configure a API Key no menu lateral.")
+    st.warning("⚠️ Aguardando API Key no menu lateral esquerdo.")
+    st.stop()
 
 # ==========================================
 # --- BASE DE DADOS LEGISLATIVA INTERNA ---
@@ -60,6 +68,15 @@ SPECIFIC_LAWS = {
 # --- FUNÇÕES ---
 # ==========================================
 
+def get_available_models(key):
+    """Lista modelos disponíveis na API para permitir escolher o mais potente."""
+    try:
+        genai.configure(api_key=key)
+        models = [m.name for m in genai.list_models() if 'generateContent' in m.supported_generation_methods]
+        return models
+    except:
+        return ["models/gemini-1.5-pro-latest", "models/gemini-1.5-flash"]
+
 def extract_text_from_pdfs_local(files):
     text = ""
     for f in files:
@@ -81,15 +98,18 @@ def merge_pdfs_to_temp(uploaded_files):
         tmp_path = tmp.name
     return tmp_path
 
-def analyze_large_document(merged_pdf_path, laws_str, extra_laws_text, prompt_instructions, key):
+def analyze_large_document(merged_pdf_path, laws_str, extra_laws_text, prompt_instructions, key, model_name):
+    """Envia o ficheiro para a Cloud e analisa com o modelo escolhido."""
     genai.configure(api_key=key)
     status_msg = st.empty()
     status_msg.info("📤 A enviar processo EIA para a Google Cloud (File API)...")
     
     processo_file = None
     try:
+        # 1. Upload
         processo_file = genai.upload_file(path=merged_pdf_path, display_name="EIA Process")
         
+        # 2. Espera ativa
         status_msg.info("⚙️ A Google está a processar o PDF...")
         while processo_file.state.name == "PROCESSING":
             time.sleep(2)
@@ -98,9 +118,10 @@ def analyze_large_document(merged_pdf_path, laws_str, extra_laws_text, prompt_in
         if processo_file.state.name == "FAILED":
             raise ValueError("Falha na leitura do PDF pela Google.")
         
-        status_msg.success("✅ Processamento concluído. A iniciar análise jurídica...")
+        status_msg.success(f"✅ Processado. A iniciar análise jurídica com **{model_name}**...")
 
-        model = genai.GenerativeModel("gemini-1.5-flash")
+        # 3. Geração
+        model = genai.GenerativeModel(model_name)
         
         full_prompt = [
             prompt_instructions,
@@ -113,7 +134,9 @@ def analyze_large_document(merged_pdf_path, laws_str, extra_laws_text, prompt_in
             processo_file
         ]
 
-        response = model.generate_content(full_prompt)
+        # Timeout aumentado para suportar modelos Pro em ficheiros grandes
+        response = model.generate_content(full_prompt, request_options={"timeout": 600})
+        
         status_msg.empty()
         return response.text
 
@@ -165,10 +188,35 @@ def create_professional_doc(content, project_type, active_laws_dict, extra_files
     doc.save(bio)
     return bio
 
-# --- UI LATERAL ESPECÍFICA ---
-# Usamos st.sidebar APÓS o utils.sidebar_comum, ele adiciona abaixo.
+# ==========================================
+# --- INTERFACE ---
+# ==========================================
+
+# --- A. BARRA LATERAL (SELETOR DE MODELO + LEIS) ---
 with st.sidebar:
-    st.markdown("---")
+    st.divider()
+    st.markdown("### 🧠 Motor de IA")
+    
+    # 1. Seletor de Modelo Dinâmico
+    opcoes_modelos = get_available_models(api_key)
+    
+    # Tenta selecionar um modelo Pro por defeito
+    idx_padrao = 0
+    for i, m in enumerate(opcoes_modelos):
+        if "pro" in m or "1.5-pro" in m:
+            idx_padrao = i
+            break
+            
+    selected_model = st.selectbox(
+        "Modelo:", 
+        opcoes_modelos, 
+        index=idx_padrao,
+        help="Escolha modelos 'Pro' para análises mais profundas."
+    )
+    
+    st.divider()
+    
+    # 2. Configuração EIA (Leis)
     st.header("Configuração EIA")
     project_type = st.selectbox("Setor RJAIA:", list(SPECIFIC_LAWS.keys()) + ["Outra Tipologia"])
     
@@ -181,7 +229,7 @@ with st.sidebar:
             
     extra_laws_files = st.file_uploader("Leis Extra (PDFs)", type=['pdf'], accept_multiple_files=True)
 
-# --- UI CENTRAL ---
+# --- B. UI CENTRAL ---
 uploaded_files = st.file_uploader(
     "📂 Carregar Processo EIA (Tomo I, Anexos, etc.)", 
     type=['pdf'], 
@@ -204,8 +252,8 @@ Não emitir parecer administrativo ("Favorável"), mas sim técnico ("Robusto/In
 """
 
 if st.button("🚀 INICIAR AUDITORIA", type="primary"):
-    if not api_key: st.error("Falta API Key.")
-    elif not uploaded_files: st.warning("Faltam ficheiros.")
+    if not uploaded_files: 
+        st.warning("Faltam ficheiros.")
     else:
         with st.spinner("A preparar ficheiros e analisar..."):
             # 1. Leis
@@ -215,12 +263,14 @@ if st.button("🚀 INICIAR AUDITORIA", type="primary"):
             # 2. Merge & Analyze
             temp_path = merge_pdfs_to_temp(uploaded_files)
             
+            # Chama a função agora com o selected_model
             result_text = analyze_large_document(
                 temp_path, 
                 laws_str, 
                 extra_text, 
                 instructions, 
-                api_key
+                api_key,
+                selected_model
             )
             
             try: os.remove(temp_path)
@@ -234,5 +284,9 @@ if st.button("🚀 INICIAR AUDITORIA", type="primary"):
                 
                 docx = create_professional_doc(result_text, project_type, active_laws, [])
 
-                st.download_button("⬇️ Download Word", docx.getvalue(), "Auditoria_EIA.docx", "application/vnd.openxmlformats-officedocument.wordprocessingml.document")
-
+                st.download_button(
+                    "⬇️ Download Word", 
+                    docx.getvalue(), 
+                    "Auditoria_EIA.docx", 
+                    "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+                )
