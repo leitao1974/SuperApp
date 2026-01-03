@@ -1,41 +1,12 @@
 import sys
 import os
 
-# --- 1. LIGAÇÃO AO UTILS (CRÍTICO) ---
-# Isto garante que encontramos o ficheiro 'utils.py' na pasta de trás
+# --- CAMINHOS ---
 current_dir = os.path.dirname(os.path.abspath(__file__))
 root_dir = os.path.dirname(current_dir)
 sys.path.insert(0, root_dir)
 
-import streamlit as st
-import utils # Importa o nosso gestor de chaves
-
-# --- 2. CONFIGURAÇÃO DA PÁGINA ---
-st.set_page_config(page_title="Compliance Ambiental", page_icon="🌿", layout="wide")
-
-# --- 3. CARREGAR BARRA LATERAL ---
-# Isto vai mostrar a chave que já inseriu, sem pedir de novo
-utils.sidebar_comum()
-
-# --- 4. VERIFICAÇÃO DE SEGURANÇA ---
-# Lemos a chave diretamente da memória global
-api_key = st.session_state.get("api_key", "")
-
-if not api_key:
-    st.error("🛑 **ACESSO BLOQUEADO**: A API Key não foi detetada.")
-    st.info("⬅️ Por favor, insira a chave na **barra lateral esquerda** e pressione Enter.")
-    st.stop() # Pára o código aqui até haver chave
-
-# ==========================================
-# DAQUI PARA BAIXO: O SEU CÓDIGO DA APP
-# ==========================================
-import google.generativeai as genai
-# ... (Resto dos imports e lógica da app ambiente.py) ...
-
-st.title("🌿 Módulo de Ambiente Ativo")
-st.write("A chave está a funcionar e pronta a usar!")
-
-# (Cole aqui o resto do seu código original do módulo 3...)
+import utils
 import streamlit as st
 from pypdf import PdfWriter, PdfReader
 from docx import Document
@@ -264,3 +235,4 @@ if st.button("🚀 INICIAR AUDITORIA", type="primary"):
                 docx = create_professional_doc(result_text, project_type, active_laws, [])
 
                 st.download_button("⬇️ Download Word", docx.getvalue(), "Auditoria_EIA.docx", "application/vnd.openxmlformats-officedocument.wordprocessingml.document")
+
