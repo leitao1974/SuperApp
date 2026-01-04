@@ -2,24 +2,19 @@ import sys
 import os
 
 # --- 1. CONFIGURAÇÃO DE CAMINHOS ---
-# Garante que encontramos o utils.py na pasta raiz
 current_dir = os.path.dirname(os.path.abspath(__file__))
 root_dir = os.path.dirname(current_dir)
 sys.path.insert(0, root_dir)
 
 import utils
 import streamlit as st
-from pypdf import PdfWriter, PdfReader
+from pypdf import PdfWriter
 from docx import Document
 from docx.shared import Pt, RGBColor
-from docx.enum.text import WD_ALIGN_PARAGRAPH
 import google.generativeai as genai
-from google.api_core.exceptions import ResourceExhausted
 import io
 import time
 import tempfile
-import re
-from datetime import datetime
 
 # --- 2. CONFIGURAÇÃO DA PÁGINA ---
 st.set_page_config(
@@ -28,79 +23,91 @@ st.set_page_config(
     layout="wide"
 )
 
-# --- 3. BARRA LATERAL COMUM ---
-# Carrega o menu e a gestão da API Key
+# --- 3. BARRA LATERAL (Base) ---
 try:
     utils.sidebar_comum()
 except:
     pass
 
-# --- 4. TÍTULO E VERIFICAÇÃO DE CHAVE ---
+# --- 4. TÍTULO E ENQUADRAMENTO ---
 st.title("⚖️ Auditor EIA Pro (File API)")
-st.info("ℹ️ Utilize este módulo para Processos EIA completos (Tomo I, RNT, Anexos). Suporta ficheiros > 200 páginas via Cloud.")
+st.markdown("""
+**Análise Técnica de Processos de Avaliação de Impacte Ambiental.**
+Este módulo suporta processos volumosos (Tomo I, RNT, Anexos) enviando-os temporariamente para a Cloud da Google para análise profunda.
+""")
 
-# Recupera chave silenciosamente da memória global
+# Recuperar API Key
 api_key = st.session_state.get("api_key", "")
 if not api_key:
-    st.warning("⚠️ Aguardando API Key no menu lateral esquerdo.")
+    st.warning("⚠️ **Atenção:** API Key não detetada. Por favor insira-a no menu lateral esquerdo.")
     st.stop()
 
 # ==========================================
-# --- BASE DE DADOS LEGISLATIVA INTERNA ---
-# ==========================================
-COMMON_LAWS = {
-    "RJAIA (DL 151-B/2013)": "https://diariodarepublica.pt/dr/legislacao-consolidada/decreto-lei/2013-116043164",
-    "SIMPLEX (DL 11/2023)": "https://diariodarepublica.pt/dr/detalhe/decreto-lei/11-2023-207604364",
-    "REDE NATURA 2000 (DL 140/99)": "https://diariodarepublica.pt/dr/legislacao-consolidada/decreto-lei/1999-34460975",
-    "REG. RUÍDO (DL 9/2007)": "https://diariodarepublica.pt/dr/legislacao-consolidada/decreto-lei/2007-34526556",
-    "LEI DA ÁGUA (Lei 58/2005)": "https://diariodarepublica.pt/dr/legislacao-consolidada/lei/2005-34563267"
-}
-
-SPECIFIC_LAWS = {
-    "Indústria Extrativa": {"DL 270/2001 (Massas Minerais)": "#"},
-    "Energia (Renováveis)": {"DL 15/2022 (Sistema Elétrico)": "#"},
-    "Indústria/Química": {"DL 127/2013 (Emissões)": "#"},
-    "Infraestruturas": {"Lei 34/2015 (Estradas)": "#"},
-    "Outra Tipologia": {}
-}
-
-# ==========================================
-# --- FUNÇÕES ---
+# --- 5. SELETOR DE MODELO (DINÂMICO) ---
 # ==========================================
 
 def get_available_models(key):
-    """Lista modelos disponíveis na API para permitir escolher o mais potente."""
+    """Lista modelos disponíveis na API."""
     try:
         genai.configure(api_key=key)
-        models = [m.name for m in genai.list_models() if 'generateContent' in m.supported_generation_methods]
-        return models
+        return [m.name for m in genai.list_models() if 'generateContent' in m.supported_generation_methods]
     except:
-        return ["models/gemini-1.5-pro-latest", "models/gemini-1.5-flash"]
+        return ["models/gemini-2.0-flash", "models/gemini-1.5-flash"]
 
-def extract_text_from_pdfs_local(files):
-    text = ""
-    for f in files:
-        try:
-            reader = PdfReader(f)
-            text += f"\n>>> DIPLOMA EXTRA: {f.name} <<<\n"
-            for page in reader.pages:
-                text += page.extract_text() + "\n"
-        except Exception as e:
-            text += f"\n[ERRO {f.name}: {str(e)}]\n"
-    return text
+with st.sidebar:
+    st.divider()
+    st.markdown("### 🧠 Motor de IA")
+    
+    opcoes_modelos = get_available_models(api_key)
+    
+    # Lógica de Prioridade: 2.5 Flash > 2.0 Flash > 1.5 Flash > Qualquer Flash
+    targets = ["2.5-flash", "2.0-flash", "1.5-flash", "flash"]
+    idx_padrao = 0
+    found = False
+    
+    for t in targets:
+        for i, m in enumerate(opcoes_modelos):
+            if t in m.lower():
+                idx_padrao = i
+                found = True
+                break
+        if found: break
+            
+    selected_model = st.selectbox(
+        "Modelo:", 
+        opcoes_modelos, 
+        index=idx_padrao,
+        help="A IA analisa documentos grandes. O modelo Flash é recomendado pela rapidez e capacidade de contexto."
+    )
+
+# ==========================================
+# --- 6. FUNÇÕES AUXILIARES ---
+# ==========================================
 
 def merge_pdfs_to_temp(uploaded_files):
+    """
+    Combina múltiplos ficheiros PDF num único ficheiro temporário.
+    Essencial para enviar Tomo I + Anexos como um só contexto.
+    """
     merger = PdfWriter()
     for uploaded_file in uploaded_files:
         merger.append(uploaded_file)
+    
     with tempfile.NamedTemporaryFile(delete=False, suffix=".pdf") as tmp:
         merger.write(tmp)
         tmp_path = tmp.name
+    
     return tmp_path
 
-def analyze_large_document(merged_pdf_path, laws_str, extra_laws_text, prompt_instructions, key, model_name):
-    """Envia o ficheiro para a Cloud e analisa com o modelo escolhido."""
+def analyze_large_document(merged_pdf_path, prompt, key, model_name):
+    """
+    1. Faz Upload para a Google File API.
+    2. Espera o processamento.
+    3. Gera a análise.
+    4. Apaga o ficheiro da cloud.
+    """
     genai.configure(api_key=key)
+    
     status_msg = st.empty()
     status_msg.info("📤 A enviar processo EIA para a Google Cloud (File API)...")
     
@@ -109,184 +116,141 @@ def analyze_large_document(merged_pdf_path, laws_str, extra_laws_text, prompt_in
         # 1. Upload
         processo_file = genai.upload_file(path=merged_pdf_path, display_name="EIA Process")
         
-        # 2. Espera ativa
-        status_msg.info("⚙️ A Google está a processar o PDF...")
+        # 2. Polling (Espera ativa)
+        status_msg.info("⚙️ A Google está a indexar o documento (isto pode demorar 10-20s)...")
         while processo_file.state.name == "PROCESSING":
             time.sleep(2)
             processo_file = genai.get_file(processo_file.name)
         
         if processo_file.state.name == "FAILED":
-            raise ValueError("Falha na leitura do PDF pela Google.")
-        
-        status_msg.success(f"✅ Processado. A iniciar análise jurídica com **{model_name}**...")
+            raise ValueError("A Google não conseguiu processar o PDF (formato inválido ou protegido).")
+            
+        status_msg.success(f"✅ Documento indexado. A iniciar análise com **{model_name}**...")
 
         # 3. Geração
         model = genai.GenerativeModel(model_name)
         
-        full_prompt = [
-            prompt_instructions,
-            "\n=== QUADRO LEGISLATIVO ===\n",
-            laws_str,
-            "\n=== LEGISLAÇÃO EXTRA ===\n",
-            extra_laws_text,
-            "\n=== INSTRUÇÃO ===\n",
-            "Analisa o PDF anexo face a esta legislação.",
-            processo_file
-        ]
-
-        # Timeout aumentado para suportar modelos Pro em ficheiros grandes
-        response = model.generate_content(full_prompt, request_options={"timeout": 600})
+        # Timeout aumentado para 600s para garantir que não corta a análise
+        response = model.generate_content(
+            [prompt, processo_file], 
+            request_options={"timeout": 600}
+        )
         
         status_msg.empty()
         return response.text
 
-    except ResourceExhausted:
-        return "🚨 ERRO DE COTA: Atingiste o limite da API da Google."
-    except Exception as e:
-        return f"❌ Erro Técnico: {str(e)}"
     finally:
+        # 4. Limpeza (Apagar ficheiro da Cloud)
         if processo_file:
-            try: genai.delete_file(processo_file.name)
-            except: pass
+            try: 
+                genai.delete_file(processo_file.name)
+            except: 
+                pass
 
-def clean_markdown(text):
-    return text.replace('**', '').strip()
-
-def create_professional_doc(content, project_type, active_laws_dict, extra_files_names):
+def create_docx(text):
+    """Gera um relatório Word formatado."""
     doc = Document()
-    style_normal = doc.styles['Normal']
-    style_normal.font.name = 'Calibri'
-    style_normal.font.size = Pt(11)
     
-    title = doc.add_heading('AUDITORIA DE CONFORMIDADE EIA', 0)
-    title.alignment = WD_ALIGN_PARAGRAPH.CENTER
-    doc.add_paragraph(f'Setor: {project_type}').alignment = WD_ALIGN_PARAGRAPH.CENTER
-    doc.add_paragraph(f'Data: {datetime.now().strftime("%d/%m/%Y")}').alignment = WD_ALIGN_PARAGRAPH.CENTER
-    doc.add_paragraph('---')
-
-    for line in content.split('\n'):
+    title = doc.add_heading('Relatório de Auditoria Técnica EIA', 0)
+    title.alignment = 1
+    doc.add_paragraph(f"Data: {time.strftime('%d/%m/%Y')}")
+    doc.add_paragraph("---")
+    
+    for line in text.split('\n'):
         line = line.strip()
         if not line: continue
-        if line.startswith('## '):
-            clean = clean_markdown(line.replace('## ', ''))
-            h = doc.add_heading(clean.upper(), level=1)
-            h.style.font.color.rgb = RGBColor(14, 77, 164)
-        elif line.startswith('### '):
-            clean = clean_markdown(line.replace('### ', ''))
-            doc.add_heading(clean, level=2)
-        elif line.startswith('- ') or line.startswith('* '):
-            doc.add_paragraph(line[2:], style='List Bullet')
-        else:
-            doc.add_paragraph(line)
-
-    doc.add_page_break()
-    doc.add_heading('ANEXO: LEGISLAÇÃO', level=1)
-    for name in active_laws_dict.keys():
-        doc.add_paragraph(name, style='List Bullet')
         
-    bio = io.BytesIO()
-    doc.save(bio)
-    return bio
+        if line.startswith('## '): 
+            h = doc.add_heading(line.replace('##', '').strip(), 1)
+            h.style.font.color.rgb = RGBColor(0, 51, 102)
+        elif line.startswith('### '): 
+            doc.add_heading(line.replace('###', '').strip(), 2)
+        elif line.startswith('- ') or line.startswith('* '): 
+            doc.add_paragraph(line[2:], style='List Bullet')
+        else: 
+            doc.add_paragraph(line)
+            
+    b = io.BytesIO()
+    doc.save(b)
+    b.seek(0)
+    return b
 
 # ==========================================
-# --- INTERFACE ---
+# --- 7. INTERFACE ---
 # ==========================================
 
-# --- A. BARRA LATERAL (SELETOR DE MODELO + LEIS) ---
-with st.sidebar:
-    st.divider()
-    st.markdown("### 🧠 Motor de IA")
-    
-    # 1. Seletor de Modelo Dinâmico
-    opcoes_modelos = get_available_models(api_key)
-    
-    # Tenta selecionar um modelo Pro por defeito
-    idx_padrao = 0
-    for i, m in enumerate(opcoes_modelos):
-        if "pro" in m or "1.5-pro" in m:
-            idx_padrao = i
-            break
-            
-    selected_model = st.selectbox(
-        "Modelo:", 
-        opcoes_modelos, 
-        index=idx_padrao,
-        help="Escolha modelos 'Pro' para análises mais profundas."
-    )
-    
-    st.divider()
-    
-    # 2. Configuração EIA (Leis)
-    st.header("Configuração EIA")
-    project_type = st.selectbox("Setor RJAIA:", list(SPECIFIC_LAWS.keys()) + ["Outra Tipologia"])
-    
-    active_laws = COMMON_LAWS.copy()
-    if project_type in SPECIFIC_LAWS:
-        active_laws.update(SPECIFIC_LAWS[project_type])
-    
-    with st.expander(f"📚 Base Legislativa ({len(active_laws)})"):
-        for k, v in active_laws.items(): st.markdown(f"- {k}")
-            
-    extra_laws_files = st.file_uploader("Leis Extra (PDFs)", type=['pdf'], accept_multiple_files=True)
-
-# --- B. UI CENTRAL ---
+# --- Upload ---
 uploaded_files = st.file_uploader(
-    "📂 Carregar Processo EIA (Tomo I, Anexos, etc.)", 
+    "Carregar Processo EIA (Tomo I, RNT, Anexos)", 
     type=['pdf'], 
-    accept_multiple_files=True
+    accept_multiple_files=True,
+    help="Pode carregar vários ficheiros. O sistema vai juntá-los e analisá-los como um todo."
 )
 
-instructions = f"""
-Atua como Perito Sénior em Engenharia do Ambiente.
-Auditoria de conformidade rigorosa ao EIA do setor: {project_type}.
+# --- Instruções para a IA ---
+instructions = """
+Atua como Perito Auditor de Avaliação de Impacte Ambiental (Engenheiro do Ambiente Sénior).
+Realiza uma auditoria técnica detalhada e crítica ao documento fornecido.
 
-ESTRUTURA OBRIGATÓRIA (Markdown ##):
-## 1. ENQUADRAMENTO LEGAL
-## 2. PRINCIPAIS IMPACTES (Por descritor)
+ESTRUTURA OBRIGATÓRIA DO RELATÓRIO:
+
+## 1. ENQUADRAMENTO LEGAL E ADMINISTRATIVO
+(Verifica a tipologia do projeto, localização, PDM e conformidade com o RJAIA).
+
+## 2. CARATERIZAÇÃO DOS IMPACTES (Factores Ambientais)
+(Analisa a qualidade da avaliação nos descritores: Ar, Ruído, Recursos Hídricos, Biodiversidade, Solos, Paisagem).
+- Identifica se a avaliação está bem fundamentada.
+
 ## 3. MEDIDAS DE MITIGAÇÃO
-## 4. ANÁLISE CRÍTICA (Lacunas?)
-## 5. FUNDAMENTAÇÃO (Cita páginas do PDF)
-## 6. CONCLUSÕES TÉCNICAS
+(Lista as medidas propostas e critica a sua eficácia. São vagas? São concretas? Faltam medidas?).
 
-Não emitir parecer administrativo ("Favorável"), mas sim técnico ("Robusto/Insuficiente").
+## 4. ANÁLISE CRÍTICA E LACUNAS
+(Identifica erros técnicos, dados em falta, má fundamentação ou omissões graves que impeçam a decisão).
+
+## 5. CONCLUSÕES TÉCNICAS
+(Parecer técnico fundamentado: O EIA é robusto o suficiente para uma decisão favorável ou precisa de Título Adicional?).
 """
 
-if st.button("🚀 INICIAR AUDITORIA", type="primary"):
-    if not uploaded_files: 
-        st.warning("Faltam ficheiros.")
+# --- Botão de Ação ---
+if st.button("🚀 INICIAR AUDITORIA EIA", type="primary", use_container_width=True):
+    if not uploaded_files:
+        st.error("⚠️ Faltam ficheiros. Por favor carregue o Processo EIA.")
     else:
-        with st.spinner("A preparar ficheiros e analisar..."):
-            # 1. Leis
-            laws_str = "\n".join([f"- {k}" for k in active_laws.keys()])
-            extra_text = extract_text_from_pdfs_local(extra_laws_files) if extra_laws_files else ""
+        # Spinner visual
+        with st.status("A realizar Auditoria Técnica...", expanded=True) as status:
             
-            # 2. Merge & Analyze
+            # 1. Juntar PDFs localmente
+            status.write("📚 A unificar ficheiros do processo...")
             temp_path = merge_pdfs_to_temp(uploaded_files)
             
-            # Chama a função agora com o selected_model
-            result_text = analyze_large_document(
-                temp_path, 
-                laws_str, 
-                extra_text, 
-                instructions, 
-                api_key,
-                selected_model
-            )
-            
-            try: os.remove(temp_path)
-            except: pass
-            
-            if "🚨" in result_text or "❌" in result_text:
-                st.error(result_text)
-            else:
-                st.success("Concluído!")
-                st.markdown(result_text)
+            try:
+                # 2. Enviar e Analisar
+                # Nota: A mensagem de status de upload é gerida dentro da função analyze_large_document
+                res = analyze_large_document(temp_path, instructions, api_key, selected_model)
                 
-                docx = create_professional_doc(result_text, project_type, active_laws, [])
-
+                status.update(label="✅ Auditoria Concluída!", state="complete")
+                
+                # 3. Mostrar Resultados
+                st.divider()
+                st.subheader("📋 Relatório de Auditoria")
+                st.markdown(res)
+                
+                # 4. Botão Download
+                doc_file = create_docx(res)
                 st.download_button(
-                    "⬇️ Download Word", 
-                    docx.getvalue(), 
-                    "Auditoria_EIA.docx", 
-                    "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+                    label="📥 Descarregar Relatório (Word)", 
+                    data=doc_file, 
+                    file_name="Auditoria_EIA.docx",
+                    mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document"
                 )
+                
+            except Exception as e:
+                status.update(label="❌ Erro", state="error")
+                st.error(f"Ocorreu um erro durante a análise: {e}")
+                
+            finally:
+                # Limpar o ficheiro temporário local
+                try: 
+                    os.remove(temp_path)
+                except: 
+                    pass
