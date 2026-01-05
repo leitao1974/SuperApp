@@ -86,32 +86,31 @@ def search_online(query):
 
 def format_paragraph(paragraph, text):
     """
-    Processa o texto para o Word:
-    1. Interpreta Markdown Bold (**texto**) e converte para Word Bold.
-    2. Formata citações [DOC... | PÁG...] em cinza/negrito.
+    Processa o texto para o Word com robustez:
+    Detecta **Negrito** e [Citações] e aplica estilos corretos.
     """
-    # Divide o texto procurando por negritos markdown
+    # Regex divide o texto em: Texto Normal | **Negrito** | Texto Normal
     parts = re.split(r'(\*\*.*?\*\*)', text)
     
     for part in parts:
-        # Se for parte em negrito (**texto**)
+        # Se for um bloco de negrito markdown (**texto**)
         if part.startswith('**') and part.endswith('**'):
             clean_text = part.replace('**', '')
             run = paragraph.add_run(clean_text)
             run.bold = True
         else:
-            # Se for texto normal, procura por citações dentro dele
+            # Se for texto normal, processamos as citações dentro dele
             citation_parts = re.split(r'(\[.*?PÁG.*?\])', part)
             for sub_part in citation_parts:
                 run = paragraph.add_run(sub_part)
-                # Se for uma citação
+                # Formatação da citação
                 if "[" in sub_part and "PÁG" in sub_part and "]" in sub_part:
                     run.font.size = Pt(9)
                     run.font.color.rgb = RGBColor(80, 80, 80) # Cinza escuro
                     run.bold = True
 
 def create_docx(text):
-    """Gera DOCX com formatação limpa, justificada e hierárquica."""
+    """Gera DOCX com parsing avançado via Regex."""
     doc = Document()
     
     title = doc.add_heading('Parecer Técnico de Auditoria Ambiental', 0)
@@ -121,44 +120,53 @@ def create_docx(text):
     p_date.alignment = WD_ALIGN_PARAGRAPH.CENTER
     doc.add_paragraph("---")
     
+    # Regex para capturar cabeçalhos (#, ##, ###, ####)
+    # Captura os cardinal e o texto separadamente
+    re_header = re.compile(r'^(#{1,6})\s+(.*)')
+    
     for line in text.split('\n'):
         line = line.strip()
         if not line: continue
         
-        # --- TÍTULOS ---
-        if line.startswith('## '): 
-            clean_line = line.replace('## ', '').replace('**', '') 
-            h = doc.add_heading(clean_line, level=1)
-            h.style.font.color.rgb = RGBColor(0, 50, 100) 
+        # 1. TÍTULOS (Detecção via Regex)
+        header_match = re_header.match(line)
+        if header_match:
+            hashes, content = header_match.groups()
+            level = len(hashes)
+            # Remove formatação markdown do título para o índice do Word ficar limpo
+            clean_title = content.replace('**', '')
             
-        elif line.startswith('### '): 
-            clean_line = line.replace('### ', '').replace('**', '')
-            doc.add_heading(clean_line, level=2)
-            
-        elif line.startswith('#### '): # Novo suporte para nível 3
-            clean_line = line.replace('#### ', '').replace('**', '')
-            doc.add_heading(clean_line, level=3)
+            if level == 1:
+                h = doc.add_heading(clean_title, level=1)
+                h.style.font.color.rgb = RGBColor(0, 50, 100)
+            elif level == 2:
+                doc.add_heading(clean_title, level=2)
+            else:
+                # Níveis 3, 4, etc.
+                doc.add_heading(clean_title, level=min(level, 3))
+            continue
 
-        # --- LISTAS ---
-        elif line.startswith('- ') or line.startswith('* '): 
+        # 2. LISTAS
+        if line.startswith('- ') or line.startswith('* '): 
             clean_line = line[2:] 
             p = doc.add_paragraph(style='List Bullet')
             p.alignment = WD_ALIGN_PARAGRAPH.JUSTIFY
-            format_paragraph(p, clean_line) 
+            format_paragraph(p, clean_line)
+            continue
             
-        # --- CITAÇÕES EM BLOCO (Indicadores) ---
-        elif line.startswith('>'): 
-            p = doc.add_paragraph(style='Intense Quote') # Estilo com barra lateral ou destaque
+        # 3. CITAÇÕES / INDICADORES (Blocos >)
+        if line.startswith('>'): 
+            # Usa estilo 'Intense Quote' ou 'Normal' com itálico se preferir
+            p = doc.add_paragraph(style='Intense Quote') 
             clean_line = line.replace('>', '').strip()
-            # AQUI ESTAVA O ERRO: Não removemos os ** para podermos formatar o label a negrito
             format_paragraph(p, clean_line) 
             p.alignment = WD_ALIGN_PARAGRAPH.JUSTIFY
+            continue
             
-        # --- TEXTO NORMAL ---
-        else: 
-            p = doc.add_paragraph()
-            p.alignment = WD_ALIGN_PARAGRAPH.JUSTIFY
-            format_paragraph(p, line) 
+        # 4. TEXTO NORMAL
+        p = doc.add_paragraph()
+        p.alignment = WD_ALIGN_PARAGRAPH.JUSTIFY
+        format_paragraph(p, line) 
             
     b = BytesIO()
     doc.save(b)
@@ -200,9 +208,9 @@ def run_analysis(target_text, lib_ctx, manual_ctx, web_ctx, key, model_name):
     (Se existirem indicadores, usa ESTRITAMENTE este formato para CADA um):
     
     #### [Nome do Indicador]
-    > **Descrição e Objetivo:** [Texto...] [CITAR].
-    > **Meta e Baseline:** [Texto...] [CITAR].
-    > **Análise Crítica:** [Texto...] [CITAR].
+    > **Descrição e Objetivo:** [Texto explicativo...] [CITAR].
+    > **Meta e Baseline:** [Texto com dados...] [CITAR].
+    > **Análise Crítica:** [Texto analítico...] [CITAR].
     
     ## 4. Riscos Críticos e Lacunas
     
