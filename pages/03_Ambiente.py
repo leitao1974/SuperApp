@@ -12,6 +12,7 @@ import google.generativeai as genai
 from pypdf import PdfReader
 from docx import Document
 from docx.shared import Pt, RGBColor
+from docx.enum.text import WD_ALIGN_PARAGRAPH  # Import necessário para justificar
 from io import BytesIO
 from duckduckgo_search import DDGS
 import time
@@ -26,7 +27,6 @@ st.set_page_config(
 # --- 3. IMPORTS LOCAIS ---
 try:
     import utils
-    # Tenta importar legislacao.py, se não existir usa dicionário vazio
     try:
         import legislacao
     except ImportError:
@@ -48,7 +48,6 @@ st.markdown("""
 Gera relatórios de conformidade com citação de páginas e transcrição de evidências.
 """)
 
-# Recuperar a chave da memória
 api_key = st.session_state.get("api_key", "")
 
 if not api_key:
@@ -64,15 +63,15 @@ def get_available_models(key):
     try:
         genai.configure(api_key=key)
         models = genai.list_models()
-        # Filtra apenas modelos que geram texto
         return [m.name for m in models if 'generateContent' in m.supported_generation_methods]
     except:
-        return ["models/gemini-2.0-flash", "models/gemini-1.5-flash"] # Fallback
+        return ["models/gemini-2.0-flash", "models/gemini-1.5-flash"]
 
-def get_pdf_text_with_pages(pdf_file):
+def get_pdf_text_with_pages(pdf_file, simple_citation=False):
     """
-    Extrai texto inserindo marcadores de página explícitos.
-    Isso permite à IA citar: 'Conforme Pág. 12 do ficheiro X'.
+    Extrai texto inserindo marcadores de página.
+    Args:
+        simple_citation (bool): Se True, usa apenas [PÁG. X]. Se False, usa [DOC: Nome | PÁG. X].
     """
     text = ""
     try:
@@ -83,8 +82,14 @@ def get_pdf_text_with_pages(pdf_file):
         
         for i, page in enumerate(reader.pages):
             content = page.extract_text() or "[Página em branco ou imagem]"
-            # INJEÇÃO DE METADADOS PARA A IA LER
-            text += f"\n[DOC: {doc_name} | PÁG. {i+1}]\n{content}\n"
+            
+            # Lógica de citação condicional
+            if simple_citation:
+                tag = f"[PÁG. {i+1}]"
+            else:
+                tag = f"[DOC: {doc_name} | PÁG. {i+1}]"
+            
+            text += f"\n{tag}\n{content}\n"
         
         text += f"=== FIM DO DOCUMENTO: {doc_name} ===\n"
         
@@ -98,7 +103,6 @@ def search_online(query):
     results_text = ""
     try:
         with DDGS() as ddgs:
-            # Pesquisa focada em legislação portuguesa
             results = list(ddgs.text(f"{query} legislação portugal dre", max_results=3))
         for r in results:
             results_text += f"\n>>> FONTE WEB: {r['title']} ({r['href']}) <<<\n{r['body']}\n"
@@ -107,11 +111,11 @@ def search_online(query):
         return f"Erro na pesquisa web: {str(e)}"
 
 def create_docx(text):
-    """Gera ficheiro Word formatado com destaque nas citações."""
+    """Gera ficheiro Word formatado e justificado."""
     doc = Document()
     
     title = doc.add_heading('Relatório de Auditoria Ambiental Fundamentado', 0)
-    title.alignment = 1 # Center
+    title.alignment = WD_ALIGN_PARAGRAPH.CENTER
     doc.add_paragraph(f"Data: {time.strftime('%d/%m/%Y')}")
     doc.add_paragraph("---")
     
@@ -119,16 +123,24 @@ def create_docx(text):
         line = line.strip()
         if not line: continue
         
+        # Limpa asteriscos que a IA possa colocar nos títulos (ex: ## **Título**)
+        clean_line = line.replace('**', '')
+        
         if line.startswith('## '): 
-            h = doc.add_heading(line.replace('## ', ''), level=1)
+            # Remove o markdown '## ' e aplica estilo
+            h_text = clean_line.replace('## ', '')
+            h = doc.add_heading(h_text, level=1)
             h.style.font.color.rgb = RGBColor(0, 100, 0) # Verde escuro
             
         elif line.startswith('### '): 
-            doc.add_heading(line.replace('### ', ''), level=2)
+            h_text = clean_line.replace('### ', '')
+            doc.add_heading(h_text, level=2)
             
         elif line.startswith('- ') or line.startswith('* '): 
             p = doc.add_paragraph(style='List Bullet')
-            # Tenta detetar citações [DOC... PÁG...] e pôr a negrito/cinza
+            p.alignment = WD_ALIGN_PARAGRAPH.JUSTIFY # Justificar Bullet Points
+            
+            # Processa citações para negrito/cinza
             parts = re.split(r'(\[.*?PÁG.*?\])', line[2:])
             for part in parts:
                 run = p.add_run(part)
@@ -137,12 +149,15 @@ def create_docx(text):
                     run.font.size = Pt(9)
                     run.font.color.rgb = RGBColor(100, 100, 100) # Cinza
                     
-        elif line.startswith('>'): # Citações transcritas (Blockquote)
+        elif line.startswith('>'): 
             p = doc.add_paragraph(style='Intense Quote')
             p.add_run(line.replace('>', '').strip()).italic = True
+            p.alignment = WD_ALIGN_PARAGRAPH.JUSTIFY
             
         else: 
-            doc.add_paragraph(line)
+            # Parágrafos normais
+            p = doc.add_paragraph(line)
+            p.alignment = WD_ALIGN_PARAGRAPH.JUSTIFY # Justificar Texto Normal
             
     b = BytesIO()
     doc.save(b)
@@ -174,8 +189,8 @@ def run_analysis(target_text, lib_ctx, manual_ctx, web_ctx, key, model_name):
     Realiza uma auditoria de conformidade rigorosa e FUNDAMENTADA.
     
     REGRAS DE FUNDAMENTAÇÃO (OBRIGATÓRIO):
-    1. **Cita a Fonte:** Sempre que afirmares algo sobre o projeto, indica a página. Ex: "O projeto localiza-se em zona REN..." [DOC: Nome.pdf | PÁG. 12].
-    2. **Transcreve Evidências:** Usa aspas para citar frases do texto original que provem a conformidade ou o erro. Ex: Como refere o promotor: "...não se preveem impactes..." [DOC: X | PÁG. Y].
+    1. **Cita a Fonte:** Sempre que afirmares algo sobre o projeto, indica a página conforme fornecido no texto (ex: [PÁG. X] ou [DOC: Y | PÁG. X]).
+    2. **Transcreve Evidências:** Usa aspas para citar frases do texto original que provem a conformidade ou o erro.
     
     ESTRUTURA DO RELATÓRIO:
     
@@ -189,12 +204,11 @@ def run_analysis(target_text, lib_ctx, manual_ctx, web_ctx, key, model_name):
     ## 3. Riscos Críticos e Omissões
     (O que falta? O que está mal fundamentado? Cita onde procuraste e não encontraste).
     
-    ## 4. Recomendações de Melhoria
-    (Ações concretas).
+    ## 4. Conclusões e Recomendações de Melhoria
+    (Síntese final e ações concretas para mitigar os riscos).
     """
     
     try:
-        # Timeout aumentado para leitura intensiva
         return model.generate_content(prompt, request_options={"timeout": 600}).text
     except Exception as e:
         return f"Erro durante a análise IA: {e}"
@@ -205,20 +219,14 @@ def run_analysis(target_text, lib_ctx, manual_ctx, web_ctx, key, model_name):
 
 if 'uploader_key' not in st.session_state: st.session_state.uploader_key = 0
 
-# --- A. CONFIGURAÇÕES (Legislação + Modelo) ---
-
-# Seletor de Modelo na Barra Lateral
+# --- A. CONFIGURAÇÕES ---
 with st.sidebar:
     st.divider()
     st.markdown("### 🧠 Motor de IA")
-    
     opcoes_modelos = get_available_models(api_key)
-    
-    # Lógica de Prioridade: 2.5 Flash > 2.0 Flash > 1.5 Flash
     targets = ["2.5-flash", "2.0-flash", "1.5-flash", "flash"]
     idx_padrao = 0
     found = False
-    
     for t in targets:
         for i, m in enumerate(opcoes_modelos):
             if t in m.lower():
@@ -227,21 +235,15 @@ with st.sidebar:
                 break
         if found: break
             
-    selected_model = st.selectbox(
-        "Modelo:", 
-        opcoes_modelos, 
-        index=idx_padrao,
-        help="O sistema seleciona automaticamente o modelo Flash mais recente."
-    )
+    selected_model = st.selectbox("Modelo:", opcoes_modelos, index=idx_padrao)
 
-# Área Principal - Legislação
 library = legislacao.get_library() if legislacao else {}
 lib_context = ""
 
 with st.expander("📚 Base Legislativa (Configuração)", expanded=False):
     st.markdown("**Selecione os diplomas aplicáveis:**")
     if not library:
-        st.info("Ficheiro 'legislacao.py' não encontrado ou vazio. A análise será feita apenas com base nos documentos PDF.")
+        st.info("Ficheiro 'legislacao.py' não encontrado ou vazio.")
     
     c1, c2 = st.columns(2)
     i = 0
@@ -250,7 +252,6 @@ with st.expander("📚 Base Legislativa (Configuração)", expanded=False):
             st.markdown(f"**{cat}**")
             for name, info in laws.items():
                 if st.checkbox(name, key=f"leg_{name}"):
-                    # Tenta aceder ao campo 'mandato' ou 'descricao', adaptando-se à estrutura
                     desc = info.get('mandato', info.get('descricao', 'Lei aplicável'))
                     lib_context += f"- {name}: {desc}\n"
         i += 1
@@ -276,7 +277,7 @@ with col_extra:
         accept_multiple_files=True, 
         key=f"extra_doc_{st.session_state.uploader_key}"
     )
-    web_q = st.text_input("Pesquisa Web (Ex: 'PDM de Sintra regulamento')", help="Pesquisa no Google/DuckDuckGo para complementar a análise.")
+    web_q = st.text_input("Pesquisa Web", help="Ex: 'PDM de Sintra regulamento'")
 
 # --- C. BOTÃO DE AÇÃO ---
 if st.button("🚀 EXECUTAR AUDITORIA FUNDAMENTADA", type="primary", use_container_width=True):
@@ -285,15 +286,21 @@ if st.button("🚀 EXECUTAR AUDITORIA FUNDAMENTADA", type="primary", use_contain
     else:
         with st.status("⚙️ A realizar auditoria...", expanded=True):
             
-            # 1. Leitura do Principal (COM PAGINAÇÃO)
-            st.write("📖 A indexar páginas do documento principal...")
-            txt_main = get_pdf_text_with_pages(f_main)
+            # Verifica se existem múltiplos ficheiros para decidir formato da citação
+            multiple_files = True if f_extra else False
             
-            # 2. Leitura dos Extras (COM PAGINAÇÃO)
+            # 1. Leitura do Principal
+            st.write("📖 A indexar páginas do documento principal...")
+            # Se não houver extras, usa citação simples [PÁG. X]
+            txt_main = get_pdf_text_with_pages(f_main, simple_citation=not multiple_files)
+            
+            # 2. Leitura dos Extras
             txt_extra = ""
             if f_extra:
                 st.write(f"📖 A indexar {len(f_extra)} anexos...")
-                for f in f_extra: txt_extra += get_pdf_text_with_pages(f) + "\n"
+                for f in f_extra: 
+                    # Extras têm sempre nome do documento [DOC: Nome | PÁG. X]
+                    txt_extra += get_pdf_text_with_pages(f, simple_citation=False) + "\n"
             
             # 3. Pesquisa Web
             txt_web = ""
@@ -317,4 +324,3 @@ if st.button("🚀 EXECUTAR AUDITORIA FUNDAMENTADA", type="primary", use_contain
                 "Relatorio_Ambiente_Fundamentado.docx",
                 mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document"
             )
-
