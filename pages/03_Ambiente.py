@@ -49,7 +49,6 @@ if not api_key:
 # ==========================================
 
 def get_available_models(key):
-    """Lista os modelos disponíveis na API."""
     try:
         genai.configure(api_key=key)
         models = genai.list_models()
@@ -58,7 +57,6 @@ def get_available_models(key):
         return ["models/gemini-2.0-flash", "models/gemini-1.5-flash"]
 
 def get_pdf_text_with_pages(pdf_file, simple_citation=False):
-    """Extrai texto com paginação para citação académica."""
     text = ""
     try:
         reader = PdfReader(pdf_file)
@@ -75,7 +73,6 @@ def get_pdf_text_with_pages(pdf_file, simple_citation=False):
     return text
 
 def search_online(query):
-    """Pesquisa Web para contexto complementar."""
     if not query: return ""
     results_text = ""
     try:
@@ -93,24 +90,28 @@ def format_paragraph(paragraph, text):
     1. Interpreta Markdown Bold (**texto**) e converte para Word Bold.
     2. Formata citações [DOC... | PÁG...] em cinza/negrito.
     """
+    # Divide o texto procurando por negritos markdown
     parts = re.split(r'(\*\*.*?\*\*)', text)
     
     for part in parts:
+        # Se for parte em negrito (**texto**)
         if part.startswith('**') and part.endswith('**'):
             clean_text = part.replace('**', '')
             run = paragraph.add_run(clean_text)
             run.bold = True
         else:
+            # Se for texto normal, procura por citações dentro dele
             citation_parts = re.split(r'(\[.*?PÁG.*?\])', part)
             for sub_part in citation_parts:
                 run = paragraph.add_run(sub_part)
+                # Se for uma citação
                 if "[" in sub_part and "PÁG" in sub_part and "]" in sub_part:
                     run.font.size = Pt(9)
                     run.font.color.rgb = RGBColor(80, 80, 80) # Cinza escuro
                     run.bold = True
 
 def create_docx(text):
-    """Gera DOCX com formatação limpa e justificada."""
+    """Gera DOCX com formatação limpa, justificada e hierárquica."""
     doc = Document()
     
     title = doc.add_heading('Parecer Técnico de Auditoria Ambiental', 0)
@@ -124,6 +125,7 @@ def create_docx(text):
         line = line.strip()
         if not line: continue
         
+        # --- TÍTULOS ---
         if line.startswith('## '): 
             clean_line = line.replace('## ', '').replace('**', '') 
             h = doc.add_heading(clean_line, level=1)
@@ -133,20 +135,26 @@ def create_docx(text):
             clean_line = line.replace('### ', '').replace('**', '')
             doc.add_heading(clean_line, level=2)
             
+        elif line.startswith('#### '): # Novo suporte para nível 3
+            clean_line = line.replace('#### ', '').replace('**', '')
+            doc.add_heading(clean_line, level=3)
+
+        # --- LISTAS ---
         elif line.startswith('- ') or line.startswith('* '): 
             clean_line = line[2:] 
             p = doc.add_paragraph(style='List Bullet')
             p.alignment = WD_ALIGN_PARAGRAPH.JUSTIFY
             format_paragraph(p, clean_line) 
             
+        # --- CITAÇÕES EM BLOCO (Indicadores) ---
         elif line.startswith('>'): 
-            p = doc.add_paragraph(style='Intense Quote')
+            p = doc.add_paragraph(style='Intense Quote') # Estilo com barra lateral ou destaque
             clean_line = line.replace('>', '').strip()
-            # Remove negritos markdown dentro da citação para ficar limpo
-            clean_line = clean_line.replace('**', '')
-            p.add_run(clean_line).italic = True
+            # AQUI ESTAVA O ERRO: Não removemos os ** para podermos formatar o label a negrito
+            format_paragraph(p, clean_line) 
             p.alignment = WD_ALIGN_PARAGRAPH.JUSTIFY
             
+        # --- TEXTO NORMAL ---
         else: 
             p = doc.add_paragraph()
             p.alignment = WD_ALIGN_PARAGRAPH.JUSTIFY
@@ -165,15 +173,15 @@ def run_analysis(target_text, lib_ctx, manual_ctx, web_ctx, key, model_name):
     Atua como **Auditor Ambiental Sénior e Investigador Académico**.
     
     ⚠️ RESTRIÇÃO DE PERSONA:
-    Nunca utilizes o termo "Analista" para te referires a ti mesmo. Utiliza "O Auditor", "Este Parecer" ou mantém o discurso impessoal (ex: "Verifica-se", "Conclui-se").
+    Nunca utilizes o termo "Analista". Utiliza "O Auditor", "Este Parecer" ou discurso impessoal ("Verifica-se").
     
-    === CONTEXTO LEGAL (Legislatura) ===
+    === CONTEXTO LEGAL ===
     {lib_ctx}
     
     === ANEXOS TÉCNICOS ===
     {manual_ctx}
     
-    === PESQUISA RECENTE ===
+    === PESQUISA ===
     {web_ctx}
     
     === DOCUMENTO EM ANÁLISE ===
@@ -182,35 +190,23 @@ def run_analysis(target_text, lib_ctx, manual_ctx, web_ctx, key, model_name):
     TAREFA:
     Elaborar um **Parecer Técnico de Auditoria** com elevado rigor científico.
     
-    DIRETRIZES DE ESTILO:
-    1.  **Impessoalidade Académica:** Usa a 3.ª pessoa.
-    2.  **Fundamentação:** Todas as afirmações devem ser sustentadas por evidências textuais [CITAR].
-    3.  **Formatação:** Usa **negrito** apenas para destacar conceitos chave.
+    ESTRUTURA OBRIGATÓRIA:
     
-    ESTRUTURA OBRIGATÓRIA DO PARECER:
+    ## 1. Enquadramento e Maturidade
     
-    ## 1. Enquadramento e Maturidade do Projeto
-    (Síntese técnica do objeto de estudo e estado da arte do documento).
-    
-    ## 2. Verificação de Conformidade Legal e Normativa
-    (Análise comparativa entre o projeto e a legislação).
-    - **[Diploma/Norma]:** [Análise de conformidade] -> Evidência: "..." [CITAR].
+    ## 2. Conformidade Legal e Normativa
     
     ## 3. Análise de Indicadores e Monitorização (KPIs)
-    (Esta secção é CRÍTICA. Se existirem indicadores, para CADA um deves seguir estritamente este esquema):
+    (Se existirem indicadores, usa ESTRITAMENTE este formato para CADA um):
     
-    ### [Nome do Indicador]
-    > **Descrição e Objetivo:** [Parágrafo dedicado a explicar o que o indicador mede e qual o seu propósito ambiental no contexto do plano] [CITAR].
-    > **Meta e Baseline:** [Quais os valores de referência ou metas apresentados?] [CITAR].
-    > **Análise Crítica:** [Avaliação do Auditor sobre a robustez dos dados, método de cálculo e tendências] [CITAR].
+    #### [Nome do Indicador]
+    > **Descrição e Objetivo:** [Texto...] [CITAR].
+    > **Meta e Baseline:** [Texto...] [CITAR].
+    > **Análise Crítica:** [Texto...] [CITAR].
     
-    (Repetir para todos os indicadores relevantes).
-    
-    ## 4. Identificação de Riscos Críticos e Lacunas
-    (Diagnóstico de omissões, falhas metodológicas ou ausência de dados).
+    ## 4. Riscos Críticos e Lacunas
     
     ## 5. Conclusões e Recomendações Técnicas
-    (Síntese conclusiva e medidas corretivas numeradas).
     """
     
     try:
@@ -224,7 +220,7 @@ def run_analysis(target_text, lib_ctx, manual_ctx, web_ctx, key, model_name):
 
 if 'uploader_key' not in st.session_state: st.session_state.uploader_key = 0
 
-# --- A. BARRA LATERAL ---
+# --- BARRA LATERAL ---
 with st.sidebar:
     try:
         utils.sidebar_comum()
@@ -246,7 +242,7 @@ with st.sidebar:
             
     selected_model = st.selectbox("Modelo:", opcoes_modelos, index=idx_padrao)
 
-# --- B. ÁREA PRINCIPAL ---
+# --- ÁREA PRINCIPAL ---
 library = legislacao.get_library() if legislacao else {}
 lib_context = ""
 
@@ -278,7 +274,6 @@ if st.button("⚖️ EMITIR PARECER TÉCNICO", type="primary", use_container_wid
     else:
         with st.status("⚙️ A processar auditoria académica...", expanded=True):
             
-            # Leitura Inteligente
             has_extras = True if f_extra else False
             st.write("📖 A analisar corpus documental...")
             
@@ -294,11 +289,9 @@ if st.button("⚖️ EMITIR PARECER TÉCNICO", type="primary", use_container_wid
                 st.write("🌍 A consultar fontes externas...")
                 txt_web = search_online(web_q)
             
-            # Análise
             st.write(f"🧠 A elaborar parecer com **{selected_model}**...")
             res = run_analysis(txt_main, lib_context, txt_extra, txt_web, api_key, selected_model)
             
-            # Output
             st.success("Parecer emitido com sucesso.")
             st.markdown("### 📝 Parecer Técnico")
             st.markdown(res)
