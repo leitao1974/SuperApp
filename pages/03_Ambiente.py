@@ -36,7 +36,7 @@ st.set_page_config(
 st.title("🎓 Auditoria Ambiental: Análise Académica")
 st.markdown("""
 **Protocolo PATE (Fundamentação Técnica e Científica).**
-Gera relatórios com rigor académico, citação de fontes e formatação Word tratada.
+Gera relatórios com rigor académico, citação de fontes e análise detalhada de indicadores.
 """)
 
 api_key = st.session_state.get("api_key", "")
@@ -93,19 +93,14 @@ def format_paragraph(paragraph, text):
     1. Interpreta Markdown Bold (**texto**) e converte para Word Bold.
     2. Formata citações [DOC... | PÁG...] em cinza/negrito.
     """
-    # Regex para capturar negrito Markdown: **texto**
-    # Divide o texto mantendo os delimitadores
     parts = re.split(r'(\*\*.*?\*\*)', text)
     
     for part in parts:
-        # Se for parte em negrito markdown
         if part.startswith('**') and part.endswith('**'):
             clean_text = part.replace('**', '')
             run = paragraph.add_run(clean_text)
             run.bold = True
         else:
-            # Processar citações dentro do texto normal
-            # Regex para capturar citações: [DOC...PÁG...] ou [PÁG...]
             citation_parts = re.split(r'(\[.*?PÁG.*?\])', part)
             for sub_part in citation_parts:
                 run = paragraph.add_run(sub_part)
@@ -113,17 +108,11 @@ def format_paragraph(paragraph, text):
                     run.font.size = Pt(9)
                     run.font.color.rgb = RGBColor(80, 80, 80) # Cinza escuro
                     run.bold = True
-                # Texto normal (sem ser citação nem negrito)
-                else:
-                    pass # O texto já foi adicionado no add_run(sub_part) acima?
-                         # Correção: O add_run adiciona qualquer coisa.
-                         # Se não for citação, não aplicamos estilo extra.
 
 def create_docx(text):
     """Gera DOCX com formatação limpa e justificada."""
     doc = Document()
     
-    # Título do Relatório
     title = doc.add_heading('Parecer Técnico de Auditoria Ambiental', 0)
     title.alignment = WD_ALIGN_PARAGRAPH.CENTER
     
@@ -135,35 +124,31 @@ def create_docx(text):
         line = line.strip()
         if not line: continue
         
-        # 1. Títulos (Headers)
         if line.startswith('## '): 
-            clean_line = line.replace('## ', '').replace('**', '') # Remove MD dos títulos
+            clean_line = line.replace('## ', '').replace('**', '') 
             h = doc.add_heading(clean_line, level=1)
-            h.style.font.color.rgb = RGBColor(0, 50, 100) # Azul Académico escuro
+            h.style.font.color.rgb = RGBColor(0, 50, 100) 
             
         elif line.startswith('### '): 
             clean_line = line.replace('### ', '').replace('**', '')
             doc.add_heading(clean_line, level=2)
             
-        # 2. Listas (Bullets)
         elif line.startswith('- ') or line.startswith('* '): 
-            clean_line = line[2:] # Remove o marcador do markdown
+            clean_line = line[2:] 
             p = doc.add_paragraph(style='List Bullet')
             p.alignment = WD_ALIGN_PARAGRAPH.JUSTIFY
-            format_paragraph(p, clean_line) # Processa negritos e citações
+            format_paragraph(p, clean_line) 
             
-        # 3. Citações em Bloco (Blockquotes)
         elif line.startswith('>'): 
             p = doc.add_paragraph(style='Intense Quote')
             clean_line = line.replace('>', '').strip()
             p.add_run(clean_line).italic = True
             p.alignment = WD_ALIGN_PARAGRAPH.JUSTIFY
             
-        # 4. Texto Normal
         else: 
             p = doc.add_paragraph()
             p.alignment = WD_ALIGN_PARAGRAPH.JUSTIFY
-            format_paragraph(p, line) # Processa negritos e citações
+            format_paragraph(p, line) 
             
     b = BytesIO()
     doc.save(b)
@@ -174,6 +159,7 @@ def run_analysis(target_text, lib_ctx, manual_ctx, web_ctx, key, model_name):
     genai.configure(api_key=key)
     model = genai.GenerativeModel(model_name)
     
+    # ATUALIZAÇÃO DO PROMPT: Inclusão de regra para Indicadores
     prompt = f"""
     Atua como **Auditor Ambiental Sénior e Investigador Académico**.
     
@@ -190,29 +176,35 @@ def run_analysis(target_text, lib_ctx, manual_ctx, web_ctx, key, model_name):
     {target_text}
     
     TAREFA:
-    Elaborar um **Parecer Técnico de Auditoria** com elevado rigor científico e formalismo académico.
+    Elaborar um **Parecer Técnico de Auditoria** com elevado rigor científico.
     
-    DIRETRIZES DE ESTILO (ACADÉMICO):
-    1.  **Impessoalidade:** Utiliza a 3.ª pessoa (ex: "Verifica-se", "Constata-se"). Evita "Eu acho" ou "Nós vimos".
-    2.  **Linguagem Técnica:** Privilegia terminologia técnica precisa. Evita coloquialismos.
-    3.  **Fundamentação:** Todas as afirmações devem ser sustentadas por evidências textuais.
-    4.  **Citações Rigorosas:** Usa o formato fornecido [PÁG. X] ou [DOC: Y | PÁG. X] imediatamente após a afirmação.
-    5.  **Formatação Markdown:** Podes usar **negrito** para destacar conceitos chave ou diplomas legais, mas não abuses.
+    REGRA DE OURO (INDICADORES):
+    Se o documento apresentar indicadores de desempenho, monitorização ou qualidade (KPIs), estes DEVEM ser tratados num capítulo próprio. Deves extrair a designação, a meta/valor de referência e fazer uma análise crítica sobre a sua pertinência ou dados apresentados.
+    
+    DIRETRIZES DE ESTILO:
+    1.  **Impessoalidade Académica:** Usa a 3.ª pessoa (ex: "Verifica-se", "Constata-se").
+    2.  **Fundamentação:** Todas as afirmações devem ser sustentadas por evidências textuais [CITAR].
+    3.  **Formatação:** Usa **negrito** para destacar conceitos chave.
     
     ESTRUTURA DO PARECER:
     
     ## 1. Enquadramento e Análise de Maturidade
-    (Síntese técnica do objeto de estudo, metodologia do documento original e estado de arte do projeto).
+    (Síntese técnica do objeto de estudo e estado da arte do projeto).
     
     ## 2. Verificação de Conformidade Legal e Normativa
-    (Análise comparativa entre o projeto e a legislação. Estrutura analítica).
-    - **[Diploma/Norma]:** [Análise de Conformidade] -> Evidência: "..." [CITAR].
+    (Análise comparativa entre o projeto e a legislação).
+    - **[Diploma/Norma]:** [Análise] -> Evidência: "..." [CITAR].
     
-    ## 3. Identificação de Riscos Críticos e Lacunas
-    (Diagnóstico de omissões, falhas metodológicas ou ausência de dados. Análise de risco fundamentada).
+    ## 3. Análise de Indicadores e Monitorização (KPIs)
+    (Obrigatório se existirem indicadores. Caso contrário, indicar que não foram identificados).
+    - **[Nome do Indicador]:** [Descrição Resumida / Meta].
+      Análise Crítica: [Avaliar robustez dos dados, baseline ou tendência] [CITAR].
     
-    ## 4. Conclusões e Recomendações Técnicas
-    (Síntese conclusiva e propostas de medidas corretivas ou de mitigação, numeradas e acionáveis).
+    ## 4. Identificação de Riscos Críticos e Lacunas
+    (Diagnóstico de omissões, falhas metodológicas ou ausência de dados).
+    
+    ## 5. Conclusões e Recomendações Técnicas
+    (Síntese conclusiva e medidas corretivas numeradas).
     """
     
     try:
@@ -235,7 +227,7 @@ with st.sidebar:
     st.divider()
     st.markdown("### 🧠 Motor de Inferência")
     opcoes_modelos = get_available_models(api_key)
-    # Seleção inteligente do modelo
+    
     idx_padrao = 0
     targets = ["2.5-flash", "2.0-flash", "1.5-flash", "pro"]
     for t in targets:
