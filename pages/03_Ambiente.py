@@ -33,10 +33,10 @@ st.set_page_config(
 )
 
 # --- 3. TÍTULO E CHAVE ---
-st.title("🎓 Auditoria Ambiental: Análise Académica")
+st.title("🎓 Auditoria Ambiental: Parecer Técnico")
 st.markdown("""
 **Protocolo PATE (Fundamentação Técnica e Científica).**
-Gera relatórios com rigor académico, citação de fontes e análise detalhada de indicadores.
+Gera pareceres com rigor académico, estrutura de indicadores detalhada e citação de fontes.
 """)
 
 api_key = st.session_state.get("api_key", "")
@@ -142,6 +142,8 @@ def create_docx(text):
         elif line.startswith('>'): 
             p = doc.add_paragraph(style='Intense Quote')
             clean_line = line.replace('>', '').strip()
+            # Remove negritos markdown dentro da citação para ficar limpo
+            clean_line = clean_line.replace('**', '')
             p.add_run(clean_line).italic = True
             p.alignment = WD_ALIGN_PARAGRAPH.JUSTIFY
             
@@ -159,9 +161,11 @@ def run_analysis(target_text, lib_ctx, manual_ctx, web_ctx, key, model_name):
     genai.configure(api_key=key)
     model = genai.GenerativeModel(model_name)
     
-    # ATUALIZAÇÃO DO PROMPT: Inclusão de regra para Indicadores
     prompt = f"""
     Atua como **Auditor Ambiental Sénior e Investigador Académico**.
+    
+    ⚠️ RESTRIÇÃO DE PERSONA:
+    Nunca utilizes o termo "Analista" para te referires a ti mesmo. Utiliza "O Auditor", "Este Parecer" ou mantém o discurso impessoal (ex: "Verifica-se", "Conclui-se").
     
     === CONTEXTO LEGAL (Legislatura) ===
     {lib_ctx}
@@ -178,27 +182,29 @@ def run_analysis(target_text, lib_ctx, manual_ctx, web_ctx, key, model_name):
     TAREFA:
     Elaborar um **Parecer Técnico de Auditoria** com elevado rigor científico.
     
-    REGRA DE OURO (INDICADORES):
-    Se o documento apresentar indicadores de desempenho, monitorização ou qualidade (KPIs), estes DEVEM ser tratados num capítulo próprio. Deves extrair a designação, a meta/valor de referência e fazer uma análise crítica sobre a sua pertinência ou dados apresentados.
-    
     DIRETRIZES DE ESTILO:
-    1.  **Impessoalidade Académica:** Usa a 3.ª pessoa (ex: "Verifica-se", "Constata-se").
+    1.  **Impessoalidade Académica:** Usa a 3.ª pessoa.
     2.  **Fundamentação:** Todas as afirmações devem ser sustentadas por evidências textuais [CITAR].
-    3.  **Formatação:** Usa **negrito** para destacar conceitos chave.
+    3.  **Formatação:** Usa **negrito** apenas para destacar conceitos chave.
     
-    ESTRUTURA DO PARECER:
+    ESTRUTURA OBRIGATÓRIA DO PARECER:
     
-    ## 1. Enquadramento e Análise de Maturidade
-    (Síntese técnica do objeto de estudo e estado da arte do projeto).
+    ## 1. Enquadramento e Maturidade do Projeto
+    (Síntese técnica do objeto de estudo e estado da arte do documento).
     
     ## 2. Verificação de Conformidade Legal e Normativa
     (Análise comparativa entre o projeto e a legislação).
-    - **[Diploma/Norma]:** [Análise] -> Evidência: "..." [CITAR].
+    - **[Diploma/Norma]:** [Análise de conformidade] -> Evidência: "..." [CITAR].
     
     ## 3. Análise de Indicadores e Monitorização (KPIs)
-    (Obrigatório se existirem indicadores. Caso contrário, indicar que não foram identificados).
-    - **[Nome do Indicador]:** [Descrição Resumida / Meta].
-      Análise Crítica: [Avaliar robustez dos dados, baseline ou tendência] [CITAR].
+    (Esta secção é CRÍTICA. Se existirem indicadores, para CADA um deves seguir estritamente este esquema):
+    
+    ### [Nome do Indicador]
+    > **Descrição e Objetivo:** [Parágrafo dedicado a explicar o que o indicador mede e qual o seu propósito ambiental no contexto do plano] [CITAR].
+    > **Meta e Baseline:** [Quais os valores de referência ou metas apresentados?] [CITAR].
+    > **Análise Crítica:** [Avaliação do Auditor sobre a robustez dos dados, método de cálculo e tendências] [CITAR].
+    
+    (Repetir para todos os indicadores relevantes).
     
     ## 4. Identificação de Riscos Críticos e Lacunas
     (Diagnóstico de omissões, falhas metodológicas ou ausência de dados).
