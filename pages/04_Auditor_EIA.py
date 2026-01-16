@@ -8,32 +8,85 @@ sys.path.insert(0, root_dir)
 
 import utils
 import streamlit as st
-from pypdf import PdfWriter
+from pypdf import PdfWriter, PdfReader
 from docx import Document
 from docx.shared import Pt, RGBColor
 import google.generativeai as genai
 import io
 import time
 import tempfile
+from datetime import datetime
 
-# --- 2. CONFIGURAÇÃO DA PÁGINA ---
+# ==========================================
+# --- 2. BASE DE DADOS: CRITÉRIOS DE RIGOR (BENCHMARKS) ---
+# ==========================================
+
+# Legislação Base (Sempre verificada)
+COMMON_LAWS = {
+    "RJAIA (DL 151-B/2013 consolidado)": "Regime Jurídico da AIA",
+    "SIMPLEX (DL 11/2023)": "Simplificação Licenciamento",
+    "LUA (DL 75/2015)": "Licenciamento Único",
+    "Rede Natura 2000": "DL 140/99"
+}
+
+# Benchmarks de Qualidade (O que a IA deve exigir)
+SECTOR_BENCHMARKS = {
+    "Energia (Eólica, Solar, Linhas)": """
+    CRITÉRIOS DE RIGOR (PORTUGAL - APA/ICNF):
+    1. Avifauna: O ciclo de monitorização foi ANUAL (4 estações)? Se for < 12 meses, é uma falha grave.
+    2. Solar: Existe Estudo de Encandeamento (Glare)? As vedações permitem passagem de fauna (>20cm solo)?
+    3. Ruído: A modelação considerou o pior cenário noturno e recetores sensíveis isolados?
+    4. Cumulativos: Avaliou parques vizinhos num raio de 10km?
+    """,
+    "Indústria Extrativa (Minas/Pedreiras)": """
+    CRITÉRIOS DE RIGOR (PORTUGAL - DGEG):
+    1. PARP: O Plano de Recuperação Paisagística tem orçamento detalhado e cronograma financeiro?
+    2. Vibrações: Existe estudo de uso de explosivos com sismógrafos nos edifícios vizinhos?
+    3. Hidrogeologia: O cone de bombagem afeta furos de captação privados vizinhos?
+    4. Poeiras: Há medidas concretas (aspersão, lavagem de rodados) ou apenas genéricas?
+    """,
+    "Agropecuária e Hidráulica": """
+    CRITÉRIOS DE RIGOR (PORTUGAL):
+    1. Efluentes: Capacidade de armazenamento para 4-6 meses (inverno)?
+    2. Odores: Modelação de dispersão de odores para povoações < 500m.
+    3. Água: Título de utilização hídrica (TUH) compatível com os caudais do projeto?
+    """,
+    "Urbanismo e Turismo": """
+    CRITÉRIOS DE RIGOR:
+    1. Saneamento: Ligação à rede pública garantida ou ETAR própria dimensionada?
+    2. Cargas: Estudo de Tráfego considera a sazonalidade (picos de verão)?
+    3. PDM: Verifica índices de impermeabilização e cérceas máximas.
+    """
+}
+
+# ==========================================
+# --- 3. CONFIGURAÇÃO DA PÁGINA ---
+# ==========================================
 st.set_page_config(
-    page_title="Auditor EIA Pro", 
+    page_title="Auditor EIA Pro (Rigor)", 
     page_icon="⚖️", 
     layout="wide"
 )
 
-# --- 3. BARRA LATERAL (Base) ---
+# Estilo para modo "Auditor Rigoroso"
+st.markdown("""
+<style>
+    .stButton>button { background-color: #8B0000; color: white; border-radius: 5px; font-weight: bold; }
+    .stSuccess { border-left: 5px solid #228B22; }
+    .stError { border-left: 5px solid #8B0000; }
+</style>
+""", unsafe_allow_html=True)
+
+# --- 4. BARRA LATERAL (Setup) ---
 try:
     utils.sidebar_comum()
 except:
     pass
 
-# --- 4. TÍTULO E ENQUADRAMENTO ---
-st.title("⚖️ Auditor EIA Pro (File API)")
+st.title("⚖️ Auditor EIA Pro (Análise Crítica & Benchmarking)")
 st.markdown("""
-**Análise Técnica de Processos de Avaliação de Impacte Ambiental.**
-Este módulo suporta processos volumosos (Tomo I, RNT, Anexos) enviando-os temporariamente para a Cloud da Google para análise profunda.
+**Módulo de Análise de Conformidade e Lacunas.**
+Este sistema cruza o Processo EIA com a legislação nacional e benchmarks de boas práticas para detetar **falhas, omissões e erros fatais**.
 """)
 
 # Recuperar API Key
@@ -43,117 +96,113 @@ if not api_key:
     st.stop()
 
 # ==========================================
-# --- 5. SELETOR DE MODELO (DINÂMICO) ---
+# --- 5. CONFIGURAÇÃO DA AUDITORIA ---
 # ==========================================
-
-def get_available_models(key):
-    """Lista modelos disponíveis na API."""
-    try:
-        genai.configure(api_key=key)
-        return [m.name for m in genai.list_models() if 'generateContent' in m.supported_generation_methods]
-    except:
-        return ["models/gemini-2.0-flash", "models/gemini-1.5-flash"]
 
 with st.sidebar:
     st.divider()
-    st.markdown("### 🧠 Motor de IA")
+    st.header("⚙️ Configuração da Auditoria")
     
+    # 1. Seleção de Modelo
+    def get_available_models(key):
+        try:
+            genai.configure(api_key=key)
+            return [m.name for m in genai.list_models() if 'generateContent' in m.supported_generation_methods]
+        except:
+            return ["models/gemini-1.5-pro", "models/gemini-1.5-flash"] # Fallback
+
     opcoes_modelos = get_available_models(api_key)
-    
-    # Lógica de Prioridade: 2.5 Flash > 2.0 Flash > 1.5 Flash > Qualquer Flash
-    targets = ["2.5-flash", "2.0-flash", "1.5-flash", "flash"]
+    # Preferência pelo PRO para raciocínio complexo, ou FLASH para volume
     idx_padrao = 0
-    found = False
-    
-    for t in targets:
-        for i, m in enumerate(opcoes_modelos):
-            if t in m.lower():
-                idx_padrao = i
-                found = True
-                break
-        if found: break
-            
-    selected_model = st.selectbox(
-        "Modelo:", 
-        opcoes_modelos, 
-        index=idx_padrao,
-        help="A IA analisa documentos grandes. O modelo Flash é recomendado pela rapidez e capacidade de contexto."
+    for i, m in enumerate(opcoes_modelos):
+        if "pro" in m.lower() and "1.5" in m.lower(): idx_padrao = i; break
+
+    selected_model = st.selectbox("Motor de Análise:", opcoes_modelos, index=idx_padrao)
+
+    # 2. Tipologia do Projeto (Define o Benchmark)
+    st.markdown("### 🏗️ Tipologia do Projeto")
+    project_type = st.selectbox(
+        "Selecione o setor para carregar os critérios de exigência:",
+        ["Outra Tipologia"] + list(SECTOR_BENCHMARKS.keys())
     )
+    
+    # Carregar o texto do benchmark correspondente
+    active_benchmark = SECTOR_BENCHMARKS.get(project_type, "Critérios Gerais de Boa Prática em EIA.")
+    
+    with st.expander("Ver Critérios Ativos"):
+        st.caption(active_benchmark)
 
 # ==========================================
-# --- 6. FUNÇÕES AUXILIARES ---
+# --- 6. FUNÇÕES CORE ---
 # ==========================================
 
 def merge_pdfs_to_temp(uploaded_files):
-    """
-    Combina múltiplos ficheiros PDF num único ficheiro temporário.
-    Essencial para enviar Tomo I + Anexos como um só contexto.
-    """
     merger = PdfWriter()
     for uploaded_file in uploaded_files:
         merger.append(uploaded_file)
-    
     with tempfile.NamedTemporaryFile(delete=False, suffix=".pdf") as tmp:
         merger.write(tmp)
         tmp_path = tmp.name
-    
     return tmp_path
 
-def analyze_large_document(merged_pdf_path, prompt, key, model_name):
-    """
-    1. Faz Upload para a Google File API.
-    2. Espera o processamento.
-    3. Gera a análise.
-    4. Apaga o ficheiro da cloud.
-    """
+def analyze_large_document(merged_pdf_path, prompt_instructions, benchmark_text, laws_dict, key, model_name):
     genai.configure(api_key=key)
-    
     status_msg = st.empty()
-    status_msg.info("📤 A enviar processo EIA para a Google Cloud (File API)...")
+    status_msg.info("📤 A enviar processo para a Google Cloud (File API)...")
     
     processo_file = None
     try:
         # 1. Upload
-        processo_file = genai.upload_file(path=merged_pdf_path, display_name="EIA Process")
+        processo_file = genai.upload_file(path=merged_pdf_path, display_name="Processo EIA")
         
-        # 2. Polling (Espera ativa)
-        status_msg.info("⚙️ A Google está a indexar o documento (isto pode demorar 10-20s)...")
+        # 2. Polling
+        status_msg.info("⚙️ A indexar volume de dados (aguarde 10-20s)...")
         while processo_file.state.name == "PROCESSING":
             time.sleep(2)
             processo_file = genai.get_file(processo_file.name)
         
         if processo_file.state.name == "FAILED":
-            raise ValueError("A Google não conseguiu processar o PDF (formato inválido ou protegido).")
-            
-        status_msg.success(f"✅ Documento indexado. A iniciar análise com **{model_name}**...")
+            raise ValueError("Falha no processamento do ficheiro pela Google.")
 
-        # 3. Geração
+        status_msg.success(f"✅ Indexação concluída. A iniciar Auditoria Crítica ({model_name})...")
+
+        # 3. Montagem do Prompt Complexo
         model = genai.GenerativeModel(model_name)
         
-        # Timeout aumentado para 600s para garantir que não corta a análise
-        response = model.generate_content(
-            [prompt, processo_file], 
-            request_options={"timeout": 600}
-        )
+        laws_str = "\n".join([f"- {k}: {v}" for k, v in laws_dict.items()])
+        
+        full_prompt = [
+            prompt_instructions,
+            "\n=== QUADRO LEGISLATIVO A CUMPRIR ===\n",
+            laws_str,
+            "\n=== BENCHMARKS DE EXIGÊNCIA TÉCNICA (NÃO IGNORAR) ===\n",
+            "O projeto DEVE ser comparado com estes standards nacionais:",
+            benchmark_text,
+            "\n=== INSTRUÇÃO FINAL ===\n",
+            "Analisa o documento em anexo. Sê implacável na procura de erros. Cita sempre a página.",
+            processo_file
+        ]
+
+        # 4. Geração (Timeout alto para docs grandes)
+        response = model.generate_content(full_prompt, request_options={"timeout": 600})
         
         status_msg.empty()
         return response.text
 
     finally:
-        # 4. Limpeza (Apagar ficheiro da Cloud)
         if processo_file:
-            try: 
-                genai.delete_file(processo_file.name)
-            except: 
-                pass
+            try: genai.delete_file(processo_file.name)
+            except: pass
 
-def create_docx(text):
-    """Gera um relatório Word formatado."""
+def create_docx(text, p_type):
     doc = Document()
+    style_normal = doc.styles['Normal']
+    style_normal.font.name = 'Calibri'
+    style_normal.font.size = Pt(11)
     
-    title = doc.add_heading('Relatório de Auditoria Técnica EIA', 0)
+    title = doc.add_heading('RELATÓRIO DE AUDITORIA EIA', 0)
     title.alignment = 1
-    doc.add_paragraph(f"Data: {time.strftime('%d/%m/%Y')}")
+    doc.add_paragraph(f"Tipologia: {p_type} | Data: {datetime.now().strftime('%d/%m/%Y')}")
     doc.add_paragraph("---")
     
     for line in text.split('\n'):
@@ -162,7 +211,7 @@ def create_docx(text):
         
         if line.startswith('## '): 
             h = doc.add_heading(line.replace('##', '').strip(), 1)
-            h.style.font.color.rgb = RGBColor(0, 51, 102)
+            h.style.font.color.rgb = RGBColor(139, 0, 0) # Dark Red
         elif line.startswith('### '): 
             doc.add_heading(line.replace('###', '').strip(), 2)
         elif line.startswith('- ') or line.startswith('* '): 
@@ -176,81 +225,96 @@ def create_docx(text):
     return b
 
 # ==========================================
-# --- 7. INTERFACE ---
+# --- 7. INTERFACE PRINCIPAL ---
 # ==========================================
 
-# --- Upload ---
 uploaded_files = st.file_uploader(
-    "Carregar Processo EIA (Tomo I, RNT, Anexos)", 
+    "Carregar Processo EIA (Tomo I, RNT, Anexos - Até 2GB)", 
     type=['pdf'], 
-    accept_multiple_files=True,
-    help="Pode carregar vários ficheiros. O sistema vai juntá-los e analisá-los como um todo."
+    accept_multiple_files=True
 )
 
-# --- Instruções para a IA ---
-instructions = """
-Atua como Perito Auditor de Avaliação de Impacte Ambiental (Engenheiro do Ambiente Sénior).
-Realiza uma auditoria técnica detalhada e crítica ao documento fornecido.
+# --- INSTRUÇÕES DO AUDITOR (PERSONA) ---
+instructions_audit = f"""
+Atua como um **Auditor Sénior da Agência Portuguesa do Ambiente (APA)**.
+A tua missão NÃO é resumir o documento, mas sim encontrar **FALHAS, OMISSÕES e INCONSISTÊNCIAS**.
 
-ESTRUTURA OBRIGATÓRIA DO RELATÓRIO:
+Tipologia do Projeto: {project_type}
 
-## 1. ENQUADRAMENTO LEGAL E ADMINISTRATIVO
-(Verifica a tipologia do projeto, localização, PDM e conformidade com o RJAIA).
+ESTRUTURA DA RESPOSTA (Markdown):
 
-## 2. CARATERIZAÇÃO DOS IMPACTES (Factores Ambientais)
-(Analisa a qualidade da avaliação nos descritores: Ar, Ruído, Recursos Hídricos, Biodiversidade, Solos, Paisagem).
-- Identifica se a avaliação está bem fundamentada.
+## 1. CONFORMIDADE ADMINISTRATIVA E LEGAL
+   - O RNT cumpre o RJAIA? É claro para a população?
+   - O projeto respeita as condicionantes (REN, RAN, Domínio Hídrico)? Cita evidências.
+   - O DL 11/2023 (Simplex) foi bem aplicado?
 
-## 3. MEDIDAS DE MITIGAÇÃO
-(Lista as medidas propostas e critica a sua eficácia. São vagas? São concretas? Faltam medidas?).
+## 2. ANÁLISE CRÍTICA VS BENCHMARKS
+   - Compara o EIA com os "Benchmarks de Exigência" fornecidos. O projeto cumpre os standards nacionais?
+   - **Estudo de Alternativas:** Foi real ou apenas para justificar a escolha prévia?
+   - **Dados de Base:** Os dados (tráfego, ruído, fauna) são atuais (< 2 anos) ou desatualizados?
 
-## 4. ANÁLISE CRÍTICA E LACUNAS
-(Identifica erros técnicos, dados em falta, má fundamentação ou omissões graves que impeçam a decisão).
+## 3. IDENTIFICAÇÃO DE "FATAL FLAWS" (ERROS GRAVES)
+   - Lista pontos que inviabilizam o projeto ou requerem alterações profundas.
+   - Ex: Construção em zona proibida, falta de água assegurada, perigo para saúde pública.
 
-## 5. CONCLUSÕES TÉCNICAS
-(Parecer técnico fundamentado: O EIA é robusto o suficiente para uma decisão favorável ou precisa de Título Adicional?).
+## 4. IMPACTES SUBVALORIZADOS PELO PROMOTOR
+   - Onde é que o EIA diz "Impacte Pouco Significativo" mas tu, como perito, discordas?
+   - As Medidas de Minimização são vagas (ex: "boas práticas") ou concretas?
+
+## 5. PARECER TÉCNICO E PEDIDO DE ELEMENTOS
+   - O estudo permite decidir? Ou é necessário pedir "Elementos Adicionais" (Aditamento)?
+   - O que falta entregar?
+
+REGRAS:
+- Fundamenta sempre com **REFERÊNCIA À PÁGINA** do PDF (ex: "Ref: Pág. 45, Tomo I").
+- Sê rigoroso, técnico e direto.
 """
 
-# --- Botão de Ação ---
-if st.button("🚀 INICIAR AUDITORIA EIA", type="primary", use_container_width=True):
+if st.button("🚀 EXECUTAR AUDITORIA TÉCNICA", type="primary", use_container_width=True):
     if not uploaded_files:
-        st.error("⚠️ Faltam ficheiros. Por favor carregue o Processo EIA.")
+        st.error("⚠️ Carregue os ficheiros do processo.")
     else:
-        # Spinner visual
-        with st.status("A realizar Auditoria Técnica...", expanded=True) as status:
+        with st.status("🕵️‍♂️ A realizar Auditoria de Conformidade...", expanded=True) as status:
             
-            # 1. Juntar PDFs localmente
-            status.write("📚 A unificar ficheiros do processo...")
+            status.write("📚 A consolidar volumes do processo...")
             temp_path = merge_pdfs_to_temp(uploaded_files)
             
             try:
-                # 2. Enviar e Analisar
-                # Nota: A mensagem de status de upload é gerida dentro da função analyze_large_document
-                res = analyze_large_document(temp_path, instructions, api_key, selected_model)
+                # Chama a função de análise com os novos parâmetros de inteligência
+                res = analyze_large_document(
+                    temp_path, 
+                    instructions_audit, 
+                    active_benchmark,
+                    COMMON_LAWS,
+                    api_key, 
+                    selected_model
+                )
                 
                 status.update(label="✅ Auditoria Concluída!", state="complete")
                 
-                # 3. Mostrar Resultados
                 st.divider()
-                st.subheader("📋 Relatório de Auditoria")
-                st.markdown(res)
                 
-                # 4. Botão Download
-                doc_file = create_docx(res)
-                st.download_button(
-                    label="📥 Descarregar Relatório (Word)", 
-                    data=doc_file, 
-                    file_name="Auditoria_EIA.docx",
-                    mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document"
-                )
+                # Exibição do Relatório
+                if "🚨" in res:
+                    st.error(res)
+                else:
+                    st.subheader("📋 Parecer Técnico da IA")
+                    st.markdown(res)
+                    
+                    # Download Word
+                    doc_file = create_docx(res, project_type)
+                    st.download_button(
+                        label="📥 Baixar Parecer Técnico (DOCX)", 
+                        data=doc_file, 
+                        file_name=f"Auditoria_EIA_{project_type.split()[0]}.docx",
+                        mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+                    )
                 
             except Exception as e:
-                status.update(label="❌ Erro", state="error")
-                st.error(f"Ocorreu um erro durante a análise: {e}")
+                status.update(label="❌ Erro na Auditoria", state="error")
+                st.error(f"Detalhe do erro: {e}")
                 
             finally:
-                # Limpar o ficheiro temporário local
-                try: 
-                    os.remove(temp_path)
-                except: 
-                    pass
+                try: os.remove(temp_path)
+                except: pass
+
